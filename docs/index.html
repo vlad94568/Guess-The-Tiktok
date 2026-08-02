@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Whose TikTok?</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <main class="center">
+      <h1>Whose TikTok?</h1>
+      <p class="muted">One screen, everyone's phones.</p>
+      <div class="stack">
+        <a class="btn" href="host.html">Host a game</a>
+        <a class="btn" href="play.html">Join a game</a>
+      </div>
+    </main>
+    <script type="module">
+      // Carry ?emu=1 across navigation so emulator sessions stay on the emulator.
+      if (new URLSearchParams(location.search).get('emu') === '1') {
+        for (const a of document.querySelectorAll('a[href]')) a.href += '?emu=1';
+      }
+    </script>
+  </body>
+</html>

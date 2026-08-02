@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Whose TikTok? — Play</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <div class="play-wrap">
+      <div id="fatal" class="err hidden"></div>
+
+      <!-- ================= JOIN ================= -->
+      <section id="view-join" class="hidden">
+        <h1>Whose TikTok?</h1>
+        <label for="f-name">Your name</label>
+        <input id="f-name" maxlength="20" autocomplete="off" />
+        <label for="f-code">Room code</label>
+        <input id="f-code" maxlength="4" autocapitalize="characters" autocomplete="off" />
+        <label for="f-handle">Your TikTok @handle</label>
+        <input id="f-handle" maxlength="30" autocapitalize="none" autocomplete="off" placeholder="vladtok" />
+        <div id="join-error" class="err hidden"></div>
+        <button id="btn-join" style="margin-top:16px">Join</button>
+      </section>
+
+      <!-- ================= LOBBY ================= -->
+      <section id="view-lobby" class="hidden">
+        <h1>You're in.</h1>
+        <p class="play-status">Watch the big screen.</p>
+        <p class="muted">Playing as <strong id="lobby-name"></strong> (<span id="lobby-handle"></span>)</p>
+        <button id="btn-leave" class="muted">Leave</button>
+      </section>
+
+      <!-- ================= PLAYING ================= -->
+      <section id="view-playing" class="hidden">
+        <p class="play-status">
+          Round <span id="round-num">1</span> — <span id="countdown">20</span>s
+        </p>
+        <div id="sit-out" class="hidden">
+          <p class="play-status">This one's yours, sit tight.</p>
+        </div>
+        <div id="vote-area">
+          <p class="muted">Whose TikTok is this?</p>
+          <div id="vote-buttons"></div>
+        </div>
+        <p class="play-score">Score: <span id="score">0</span></p>
+      </section>
+
+      <!-- ================= REVEAL ================= -->
+      <section id="view-reveal" class="hidden">
+        <p class="play-status" id="reveal-msg">…</p>
+        <p class="play-score">Score: <span id="reveal-score">0</span></p>
+        <p class="muted">Waiting for the host…</p>
+      </section>
+
+      <!-- ================= FINISHED ================= -->
+      <section id="view-finished" class="hidden">
+        <h1>Done</h1>
+        <p class="play-status" id="final-placing">…</p>
+        <p class="play-score">Final score: <span id="final-score">0</span></p>
+      </section>
+    </div>
+
+    <script type="module" src="js/play.js"></script>
+  </body>
+</html>

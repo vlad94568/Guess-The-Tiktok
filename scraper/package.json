@@ -1,0 +1,19 @@
+{
+  "name": "whose-tiktok-scraper",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local scraper service for the Whose TikTok? party game. Resolves a handle + mode into a list of TikTok video ids.",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.22.2",
+    "playwright": "^1.62.1"
+  }
+}

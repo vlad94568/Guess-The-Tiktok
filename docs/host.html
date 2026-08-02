@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Whose TikTok? — Host</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <div class="host-wrap">
+      <div id="fatal" class="err hidden"></div>
+
+      <!-- ================= LOBBY ================= -->
+      <section id="view-lobby" class="hidden">
+        <h1>Whose TikTok?</h1>
+        <p class="host-big">Join at <strong id="join-url">…</strong> — room code:</p>
+        <div class="host-code" id="room-code">····</div>
+
+        <fieldset>
+          <legend>Mode</legend>
+          <label><input type="radio" name="mode" value="reposts" checked /> Reposts <span class="muted">(works for everyone)</span></label>
+          <label><input type="radio" name="mode" value="likes" /> Likes <span class="muted">(needs public Liked videos)</span></label>
+          <label><input type="radio" name="mode" value="both" /> Both</label>
+        </fieldset>
+
+        <div class="row">
+          <div style="flex:1">
+            <label for="round-count">Rounds</label>
+            <input id="round-count" type="number" value="10" min="1" max="50" />
+          </div>
+          <div style="flex:1">
+            <label for="timer-secs">Seconds per round</label>
+            <input id="timer-secs" type="number" value="20" min="5" max="120" />
+          </div>
+        </div>
+
+        <h2>Players (<span id="player-count">0</span>)</h2>
+        <ul class="host-list" id="lobby-players"></ul>
+
+        <p id="scraper-health" class="host-big">Scraper: <span class="muted">checking…</span></p>
+        <button id="btn-start" disabled>Start Game</button>
+        <p class="muted" id="start-hint"></p>
+      </section>
+
+      <!-- ================= LOADING ================= -->
+      <section id="view-loading" class="hidden">
+        <h1>Building pools…</h1>
+        <ul class="host-list" id="loading-players"></ul>
+      </section>
+
+      <!-- ================= PLAYING ================= -->
+      <section id="view-playing" class="hidden">
+        <div class="host-header">
+          <span>Round <span id="round-num">1</span>/<span id="round-total">10</span></span>
+          <span class="countdown" id="countdown">20</span>
+          <span>Voted <span id="voted-count">0</span>/<span id="voted-total">0</span></span>
+        </div>
+        <div class="embed-slot" id="embed-slot"></div>
+        <p class="host-big muted" id="voted-names"></p>
+      </section>
+
+      <!-- ================= REVEAL ================= -->
+      <section id="view-reveal" class="hidden">
+        <div class="host-header"><span>Round <span id="reveal-round-num">1</span>/<span id="reveal-round-total">10</span></span></div>
+        <p class="host-huge">It was <span id="reveal-owner">…</span></p>
+        <ul class="host-list" id="reveal-votes"></ul>
+        <h2>Leaderboard</h2>
+        <ul class="host-list" id="reveal-board"></ul>
+        <button id="btn-next">Next Round</button>
+      </section>
+
+      <!-- ================= FINISHED ================= -->
+      <section id="view-finished" class="hidden">
+        <h1>Final scores</h1>
+        <p class="host-huge" id="winner">…</p>
+        <ul class="host-list" id="final-board"></ul>
+        <button id="btn-newgame">New Game</button>
+      </section>
+    </div>
+
+    <script type="module" src="js/host.js"></script>
+  </body>
+</html>
