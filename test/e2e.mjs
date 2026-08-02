@@ -9,9 +9,10 @@
 //   - scraper             (:8787)
 //   - firebase emulators  (auth :9099, database :9000) — emulator runs only
 //
-// Run: node test/e2e.mjs [--headed] [--prod]
+// Run: node test/e2e.mjs [--headed] [--prod] [--split]
 //   default   against the emulator (?emu=1)
 //   --prod    against the real Firebase project; no emulator needed
+//   --split   players on the live GitHub Pages URL, host on localhost (real topology)
 
 // Borrows the scraper's playwright install rather than adding a root dependency.
 import { chromium } from '../scraper/node_modules/playwright/index.mjs';
@@ -23,6 +24,15 @@ const HEADED = process.argv.includes('--headed');
 // else about the run is identical.
 const PROD = process.argv.includes('--prod');
 const Q = PROD ? '' : '?emu=1';
+
+// --split puts the PLAYERS on the live GitHub Pages deployment while the host stays on
+// localhost. That is the real party topology (README §9.4): only the host talks to the
+// scraper, so the host serves locally and phones use the public URL. It also exercises
+// two things nothing else does — anonymous sign-in from the github.io origin (i.e. the
+// Firebase Authorized-domains setting) and relative asset paths under a /repo/ subpath.
+const SPLIT = process.argv.includes('--split');
+const PLAY_BASE = SPLIT ? 'https://vlad94568.github.io/Guess-The-Tiktok' : BASE;
+const OUR_ORIGINS = ['localhost:3000', 'vlad94568.github.io'];
 const HANDLES = ['zachking', 'tiktok']; // both verified to have public reposts
 const ROUNDS = 3;
 const TIMER = 10;
@@ -49,7 +59,7 @@ async function newCtx(browser, tag) {
     // and counting it would make "zero console errors" impossible to ever satisfy.
     // Anything from OUR origin still counts.
     const url = m.location()?.url || '';
-    consoleErrors[tag].push({ text: m.text(), url, ours: url === '' || url.includes('localhost:3000') });
+    consoleErrors[tag].push({ text: m.text(), url, ours: url === '' || OUR_ORIGINS.some((o) => url.includes(o)) });
   });
   page.on('pageerror', (e) => consoleErrors[tag].push({ text: 'UNCAUGHT: ' + e.message, url: 'page', ours: true }));
   return { ctx, page };
@@ -85,7 +95,7 @@ step(3, 'two players join from separate contexts');
 const players = [];
 for (let i = 0; i < 2; i++) {
   const p = await newCtx(browser, `p${i + 1}`);
-  await p.page.goto(`${BASE}/play.html${Q}`, { waitUntil: 'domcontentloaded' });
+  await p.page.goto(`${PLAY_BASE}/play.html${Q}`, { waitUntil: 'domcontentloaded' });
   await p.page.waitForSelector('#view-join:not(.hidden)', { timeout: 20000 });
   await p.page.fill('#f-name', `Player${i + 1}`);
   await p.page.fill('#f-code', code);
