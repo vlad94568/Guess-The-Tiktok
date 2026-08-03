@@ -294,3 +294,52 @@ test('unauthenticated access is refused outright', async () => {
   const r = await fetch(url(`rooms/${CODE}/meta`));
   assert.ok(r.status === 401, `anon read got ${r.status}`);
 });
+
+// ===========================================================================
+// ABUSE LIMITS — the repo is public, so the web API key is public too. Anyone can
+// mint an anonymous uid and start writing. These bound what such a uid can do.
+// ===========================================================================
+
+test('ABUSE: room codes are constrained to 4 uppercase letters', async () => {
+  const mk = (code, uid) =>
+    write(`rooms/${code}/meta`, uid, {
+      code,
+      hostUid: uid,
+      mode: 'reposts',
+      roundCount: 3,
+      timerSecs: 20,
+      status: 'lobby',
+      createdAt: { '.sv': 'timestamp' },
+    });
+
+  // Arbitrary keys would let a bot spray unbounded rooms across the namespace.
+  for (const bad of ['toolongcode', 'ab', 'lower', 'WITH-DASH', 'A1B2', '../evil', 'x'.repeat(200)]) {
+    const r = await mk(bad, P2);
+    assert.ok(DENIED(r), `room key "${bad.slice(0, 20)}" was accepted`);
+  }
+  const good = await mk('ZZZZ', P2);
+  assert.ok(OK(good), `a valid code was refused: ${good.status} ${good.text}`);
+  await asAdmin('rooms/ZZZZ', 'DELETE');
+});
+
+test('ABUSE: pool entries must look like TikTok video ids', async () => {
+  // Without this the pool is an unbounded arbitrary-key blob store for the host uid.
+  for (const bad of ['not-a-number', 'abc', '12', 'x'.repeat(120)]) {
+    const r = await write(`rooms/${CODE}/pool/${P1}/${encodeURIComponent(bad)}`, HOST, true);
+    assert.ok(DENIED(r), `pool key "${bad.slice(0, 20)}" was accepted`);
+  }
+  assert.ok(OK(await write(`rooms/${CODE}/pool/${P1}/7301234567890123456`, HOST, true)));
+});
+
+test('ABUSE: a round videoId must look like a TikTok video id', async () => {
+  assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/videoId`, HOST, 'javascript:alert(1)')));
+  assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/videoId`, HOST, 'x'.repeat(200))));
+  assert.ok(OK(await write(`rooms/${CODE}/rounds/0/videoId`, HOST, '7301234567890123456')));
+});
+
+test('ABUSE: player name and handle stay length-bounded', async () => {
+  await asAdmin(`rooms/${CODE}/meta/status`, 'PUT', 'lobby');
+  assert.ok(DENIED(await write(`rooms/${CODE}/players/${P2}/name`, P2, 'x'.repeat(500))));
+  assert.ok(DENIED(await write(`rooms/${CODE}/players/${P2}/handle`, P2, 'y'.repeat(500))));
+  assert.ok(DENIED(await write(`rooms/${CODE}/players/${P2}/name`, P2, '')));
+});

@@ -7,7 +7,7 @@
       "$code": {
         "meta": {
           ".read": "auth != null",
-          ".write": "auth != null && newData.child('hostUid').val() === auth.uid && (!data.exists() || data.child('hostUid').val() === auth.uid) && (!data.child('createdAt').exists() || data.child('createdAt').val() + 43200000 > now)",
+          ".write": "auth != null && $code.matches(/^[A-Z]{4}$/) && newData.child('hostUid').val() === auth.uid && (!data.exists() || data.child('hostUid').val() === auth.uid) && (!data.child('createdAt').exists() || data.child('createdAt').val() + 43200000 > now)",
           ".validate": "newData.hasChildren(['code', 'hostUid', 'mode', 'roundCount', 'timerSecs', 'status'])",
           "code": { ".validate": "newData.isString() && newData.val() === $code" },
           "hostUid": { ".validate": "newData.isString()" },
@@ -61,7 +61,7 @@
           ".read": "auth != null && root.child('rooms').child($code).child('meta').child('hostUid').val() === auth.uid",
           ".write": "auth != null && root.child('rooms').child($code).child('meta').child('hostUid').val() === auth.uid && root.child('rooms').child($code).child('meta').child('createdAt').val() + 43200000 > now",
           "$uid": {
-            "$videoId": { ".validate": "newData.isBoolean()" }
+            "$videoId": { ".validate": "newData.isBoolean() && $videoId.matches(/^[0-9]{6,25}$/)" }
           }
         },
 
@@ -78,7 +78,7 @@
             ".read": "auth != null && root.child('rooms').child($code).child('meta').child('hostUid').val() === auth.uid",
             ".write": "auth != null && root.child('rooms').child($code).child('meta').child('hostUid').val() === auth.uid && root.child('rooms').child($code).child('meta').child('createdAt').val() + 43200000 > now",
 
-            "videoId": { ".validate": "newData.isString()" },
+            "videoId": { ".validate": "newData.isString() && newData.val().matches(/^[0-9]{6,25}$/)" },
 
             "ownerUid": {
               ".read": "auth != null && root.child('rooms').child($code).child('rounds').child($i).child('phase').val() === 'reveal'",

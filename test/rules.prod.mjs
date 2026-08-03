@@ -19,12 +19,27 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
-// Public by design — same config as docs/js/firebase.js.
-const KEY = 'AIzaSyCnO5p0OooCetRQK65YH6B8uddg1eTCPsg';
-const DB = 'https://would-you-rather-e18fb-default-rtdb.firebaseio.com';
+// Read the config out of docs/js/firebase.js rather than restating it, so the key and
+// database URL live in exactly ONE file. (They are public by design — a Firebase web
+// key identifies the project and authorises nothing — but duplicating them means two
+// places to update and two hits for GitHub's secret scanner.)
+const CONFIG_FILE = new URL('../docs/js/firebase.js', import.meta.url);
+const configSrc = readFileSync(CONFIG_FILE, 'utf8');
+const field = (name) => {
+  const m = configSrc.match(new RegExp(`${name}:\\s*'([^']+)'`));
+  if (!m) throw new Error(`could not read ${name} from docs/js/firebase.js`);
+  return m[1];
+};
+const KEY = field('apiKey');
+const DB = field('databaseURL').replace(/\/$/, '');
 
-const CODE = 'PT' + Math.random().toString(36).slice(2, 4).toUpperCase();
+// Letters only: the rules constrain room keys to /^[A-Z]{4}$/, and base-36 would
+// sometimes yield digits and fail intermittently.
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const rnd = () => LETTERS[Math.floor(Math.random() * LETTERS.length)];
+const CODE = 'P' + rnd() + rnd() + rnd();
 
 let HOST, P1, P2; // uids
 const token = {};
@@ -64,8 +79,24 @@ const DENIED = (r) => r.status === 401 || /Permission denied/.test(r.text);
 const OK = (r) => r.status === 200;
 const SV = { '.sv': 'timestamp' };
 
-before(async () => {
+// Sign in up front so the whole suite can skip cleanly rather than fail confusingly.
+// Restricting the browser API key to HTTP referrers (recommended for a public repo)
+// deliberately blocks Node, which sends no Referer — that is the restriction working,
+// not a regression, and the emulator suite covers the same attacks either way.
+let SKIP = false;
+try {
   [HOST, P1, P2] = await Promise.all([signUp(), signUp(), signUp()]);
+} catch (err) {
+  SKIP =
+    `cannot sign in to the live project: ${String(err.message).slice(0, 140)} | ` +
+    `If you restricted the API key to HTTP referrers this is EXPECTED (Node sends no Referer). ` +
+    `Run the emulator suite instead: node --test "test/rules.test.mjs"`;
+  console.log(`\n  SKIPPING live-rules suite: ${SKIP}\n`);
+}
+const t = (name, fn) => test(name, SKIP ? { skip: SKIP } : {}, fn);
+
+before(async () => {
+  if (SKIP) return;
 
   // --- build the fixture the way the real app does -------------------------
   let r = await write(`rooms/${CODE}/meta`, HOST, {
@@ -103,6 +134,7 @@ before(async () => {
 });
 
 after(async () => {
+  if (SKIP) return;
   // Remove what we can. meta cannot be deleted by design (see header).
   await call(`rooms/${CODE}/rounds`, HOST, 'DELETE');
   await call(`rooms/${CODE}/pool`, HOST, 'DELETE');
@@ -111,42 +143,42 @@ after(async () => {
 
 // ===========================================================================
 
-test('PROD ATTACK 1: a non-host player cannot read ownerUid mid-round', async () => {
+t('PROD ATTACK 1: a non-host player cannot read ownerUid mid-round', async () => {
   assert.ok(DENIED(await read(`rooms/${CODE}/rounds/0/ownerUid`, P2)), 'ownerUid leaked');
   for (const p of [`rooms/${CODE}/rounds/0`, `rooms/${CODE}/rounds`, `rooms/${CODE}`, '']) {
     assert.ok(DENIED(await read(p, P2)), `leaked via "${p}"`);
   }
 });
 
-test('PROD ATTACK 2: a player cannot write another player\'s vote', async () => {
+t('PROD ATTACK 2: a player cannot write another player\'s vote', async () => {
   assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/votes/${P1}`, P2, P2)));
 });
 
-test('PROD: the pool is unreadable by players, readable by the host', async () => {
+t('PROD: the pool is unreadable by players, readable by the host', async () => {
   assert.ok(DENIED(await read(`rooms/${CODE}/pool`, P2)));
   assert.ok(DENIED(await read(`rooms/${CODE}/pool/${P1}`, P2)));
   assert.ok(OK(await read(`rooms/${CODE}/pool`, HOST)));
 });
 
-test('PROD: videoId is unreadable by players', async () => {
+t('PROD: videoId is unreadable by players', async () => {
   assert.ok(DENIED(await read(`rooms/${CODE}/rounds/0/videoId`, P2)));
 });
 
-test('PROD: sitOut cannot be enumerated to find the owner', async () => {
+t('PROD: sitOut cannot be enumerated to find the owner', async () => {
   assert.ok(OK(await read(`rooms/${CODE}/rounds/0/sitOut/${P1}`, P1)), 'owner cannot see their own flag');
   assert.ok(DENIED(await read(`rooms/${CODE}/rounds/0/sitOut/${P1}`, P2)), 'sitOut leaked the owner');
   assert.ok(DENIED(await read(`rooms/${CODE}/rounds/0/sitOut`, P2)), 'sitOut was enumerable');
 });
 
-test('PROD: a player cannot award themselves points', async () => {
+t('PROD: a player cannot award themselves points', async () => {
   assert.ok(DENIED(await write(`rooms/${CODE}/players/${P2}/score`, P2, 99)));
 });
 
-test('PROD: a player cannot rename themselves mid-game', async () => {
+t('PROD: a player cannot rename themselves mid-game', async () => {
   assert.ok(DENIED(await write(`rooms/${CODE}/players/${P2}/name`, P2, 'Sneaky')));
 });
 
-test('PROD: a non-host cannot drive the game', async () => {
+t('PROD: a non-host cannot drive the game', async () => {
   assert.ok(DENIED(await write(`rooms/${CODE}/meta/status`, P2, 'finished')));
   assert.ok(DENIED(await write(`rooms/${CODE}/meta/hostUid`, P2, P2)), 'room takeover');
   assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/phase`, P2, 'reveal')), 'forced reveal');
@@ -154,7 +186,7 @@ test('PROD: a non-host cannot drive the game', async () => {
   assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/scored`, P2, true)));
 });
 
-test('PROD: voting rules — own vote allowed, everything else refused', async () => {
+t('PROD: voting rules — own vote allowed, everything else refused', async () => {
   assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, P2)), 'self-vote');
   assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, 'uid_nobody')), 'vote for a ghost');
   assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/votes/${P1}`, P1, P2)), 'owner voted');
@@ -167,7 +199,7 @@ test('PROD: voting rules — own vote allowed, everything else refused', async (
   assert.ok(DENIED(await read(`rooms/${CODE}/rounds/0/votes`, P2)), 'votes leaked before reveal');
 });
 
-test('PROD: ownerUid and votes open up exactly at reveal', async () => {
+t('PROD: ownerUid and votes open up exactly at reveal', async () => {
   assert.ok(DENIED(await read(`rooms/${CODE}/rounds/0/ownerUid`, P2)), 'leaked while playing');
   assert.ok(OK(await write(`rooms/${CODE}/rounds/0/phase`, HOST, 'locked')));
   assert.ok(DENIED(await read(`rooms/${CODE}/rounds/0/ownerUid`, P2)), 'leaked while locked');
@@ -181,7 +213,7 @@ test('PROD: ownerUid and votes open up exactly at reveal', async () => {
   assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/votes/${P1}`, P1, P2)));
 });
 
-test('PROD: unauthenticated access is refused outright', async () => {
+t('PROD: unauthenticated access is refused outright', async () => {
   const r = await fetch(`${DB}/rooms/${CODE}/meta.json`);
   assert.equal(r.status, 401);
 });
