@@ -7,7 +7,7 @@
 import { authReady } from './firebase.js';
 import * as db from './db.js';
 import { generateRounds, scoreRound, voteProgress, leaderboard } from './game.js';
-import { mountEmbed, unmountEmbed, currentEmbed } from './embed.js';
+import { mountEmbed, unmountEmbed, currentEmbed, watchUrl } from './embed.js';
 
 const SCRAPER = 'http://localhost:8787';
 const $ = (id) => document.getElementById(id);
@@ -312,6 +312,9 @@ function renderPlaying() {
   $('round-num').textContent = S.round + 1;
   $('round-total').textContent = S.meta.roundCount;
   if (S.roundPlan && currentEmbed() !== S.roundPlan.videoId) mountEmbed($('embed-slot'), S.roundPlan.videoId);
+  // Escape hatch: TikTok refuses to embed some videos, and the link also lets the room
+  // watch one properly after the round. Host screen only — it carries the videoId.
+  if (S.roundPlan) $('watch-link').href = watchUrl(S.roundPlan.videoId);
 
   const prog = voteProgress(Object.keys(S.players), S.roundPlan?.ownerUid, S.votes);
   $('voted-count').textContent = prog.voted.length;
@@ -325,6 +328,7 @@ function renderReveal() {
   $('reveal-round-num').textContent = S.round + 1;
   $('reveal-round-total').textContent = S.meta.roundCount;
   $('reveal-owner').textContent = S.players[ownerUid]?.name ?? '???';
+  if (S.roundPlan) $('reveal-watch-link').href = watchUrl(S.roundPlan.videoId);
 
   $('reveal-votes').innerHTML =
     Object.entries(S.votes)

@@ -10,6 +10,19 @@
 // Verified 2026-08-01.
 const EMBED_URL = (videoId) => `https://www.tiktok.com/embed/v2/${videoId}`;
 
+/**
+ * Canonical watch URL for opening a video in a real TikTok tab.
+ *
+ * The pool stores video ids only, never the author handle — but TikTok routes on the id
+ * alone, so a placeholder handle resolves to the correct video (verified 2026-08-01:
+ * /@x/video/<id> returns the page with the true author embedded in it). The bare
+ * /video/<id> form does NOT work; it returns an empty shell.
+ *
+ * HOST SCREEN ONLY. This URL contains the videoId, which is exactly what players must
+ * not learn — the rules deny them `rounds/$i/videoId` for that reason.
+ */
+export const watchUrl = (videoId) => `https://www.tiktok.com/@x/video/${videoId}`;
+
 // TikTok's embed refuses to size itself below these; anything smaller crops the video.
 const EMBED_WIDTH = 340;
 const EMBED_HEIGHT = 720;

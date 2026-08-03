@@ -5,8 +5,7 @@
 // profile would share a single uid and silently be the same player.
 //
 // Prereqs:
-//   - static server       (:3000, serving docs/ literally)
-//   - scraper             (:8787)
+//   - scraper             (:8787) — also serves docs/, so it is the host origin too
 //   - firebase emulators  (auth :9099, database :9000) — emulator runs only
 //
 // Run: node test/e2e.mjs [--headed] [--prod] [--split]
@@ -18,7 +17,8 @@
 import { chromium } from '../scraper/node_modules/playwright/index.mjs';
 import { mkdirSync } from 'node:fs';
 
-const BASE = 'http://localhost:3000';
+// The scraper serves the host screen itself now, so there is one origin, not two.
+const BASE = 'http://localhost:8787';
 const HEADED = process.argv.includes('--headed');
 // --prod runs against the real Firebase project instead of the emulator. Everything
 // else about the run is identical.
@@ -32,7 +32,7 @@ const Q = PROD ? '' : '?emu=1';
 // Firebase Authorized-domains setting) and relative asset paths under a /repo/ subpath.
 const SPLIT = process.argv.includes('--split');
 const PLAY_BASE = SPLIT ? 'https://vlad94568.github.io/Guess-The-Tiktok' : BASE;
-const OUR_ORIGINS = ['localhost:3000', 'vlad94568.github.io'];
+const OUR_ORIGINS = ['localhost:8787', 'vlad94568.github.io'];
 const HANDLES = ['zachking', 'tiktok']; // both verified to have public reposts
 const ROUNDS = 3;
 const TIMER = 10;
@@ -138,6 +138,15 @@ const embed = await host.page.evaluate(() => {
 log('  ' + JSON.stringify(embed));
 check(!!embed && /tiktok\.com\/embed\/v2\/\d+/.test(embed.src), 'iframe points at the TikTok embed');
 check(!!embed && embed.w > 200 && embed.h > 400, 'iframe has real dimensions');
+
+const link = await host.page.evaluate(() => {
+  const a = document.getElementById('watch-link');
+  return a ? { href: a.href, target: a.target, rel: a.rel, visible: a.offsetParent !== null } : null;
+});
+log('  watch link: ' + JSON.stringify(link));
+check(!!link && link.href === `https://www.tiktok.com/@x/video/${embed.videoId}`, 'watch link points at this round\'s video');
+check(!!link && link.target === '_blank' && /noopener/.test(link.rel), 'watch link opens a new tab safely');
+check(!!link && link.visible, 'watch link visible on host');
 await host.page.waitForTimeout(6000); // let the embed paint
 await host.page.screenshot({ path: 'test/out/3-playing-embed.png' });
 log('  screenshot: test/out/3-playing-embed.png');
@@ -150,6 +159,9 @@ for (const [i, p] of players.entries()) {
   if (/embed\/v2\//.test(body)) leaks.push('embed url');
   if (embed?.videoId && body.includes(embed.videoId)) leaks.push('videoId');
   if (/<iframe/i.test(body)) leaks.push('iframe');
+  // The host-only "open in a new tab" link embeds the videoId, so it must never
+  // appear on a phone.
+  if (/tiktok\.com\/@[^/]*\/video\//.test(body)) leaks.push('watch link');
   check(leaks.length === 0, `p${i + 1} DOM contains no video/videoId/iframe${leaks.length ? ' (found: ' + leaks + ')' : ''}`);
 }
 // And prove it at the database level, not just the UI: ask for ownerUid directly.

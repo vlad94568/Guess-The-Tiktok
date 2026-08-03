@@ -87,30 +87,52 @@ npx firebase-tools deploy --only database
 
 The rules are the only thing protecting the data — see "Why the Firebase config is in the repo".
 
-### 4. Run the scraper (host machine only)
+### 4. Host a game (Windows — no commands)
+
+Double-click **`START HERE - Host a game.cmd`**.
+
+It installs dependencies on first run, starts the server, waits for it, and opens the host
+screen. Node.js is the only prerequisite; the script says so plainly if it is missing.
+
+When you are finished, double-click **`STOP - End game.cmd`**. This matters — see
+"Resource use" below.
+
+<details>
+<summary>Running it manually (any OS)</summary>
 
 ```bash
 cd scraper && npm install && npm start
 ```
 
-Serves `http://localhost:8787`. The host page shows a green/red indicator for it.
-
-Before letting phones hit the Pages deployment, pin the CORS allowlist to your own origin
+Then open `http://localhost:8787/host.html`. To pin the CORS allowlist to your own origin
 instead of the default any-`*.github.io` pattern:
 
 ```bash
 cd scraper && GH_PAGES_ORIGIN=https://vlad94568.github.io npm start
 ```
 
-On Windows PowerShell that is `$env:GH_PAGES_ORIGIN='https://vlad94568.github.io'; npm start`.
+On Windows PowerShell: `$env:GH_PAGES_ORIGIN='https://vlad94568.github.io'; npm start`.
+</details>
 
-### 5. Serve the site
+### One server, not two
 
-```bash
-npx serve docs
-```
+The scraper process also serves `docs/`, so the host runs a single thing on `:8787` and the
+host page is **same-origin with the scraper** — no CORS and no Private Network Access
+preflight on the host's own `/scrape` calls. Players still load the site from GitHub Pages,
+which is what the CORS allowlist is for.
 
-Then open `http://localhost:3000/host.html`.
+Static files are served at exact paths with no clean-URL rewriting, matching GitHub Pages, so
+the local host screen and the deployed player screen behave identically.
+
+### Resource use
+
+The scraper keeps one headless Chromium resident for as long as the server runs — roughly
+**550 MB idle, ~670 MB after a few profiles have been scraped**. It does *not* grow per round
+or per player: every scrape opens a page and closes it on all paths, including errors.
+
+There is **no idle shutdown**. The browser is released when the server exits, so run
+`STOP - End game.cmd` when the party is over or it holds that memory indefinitely. That script
+also sweeps up any headless Chromium orphaned by a hard kill.
 
 ---
 
@@ -128,8 +150,8 @@ Then open `http://localhost:3000/host.html`.
 
 Only the **host** page ever talks to the scraper; phones talk exclusively to Firebase.
 
-**Recommended (reliable):** the host runs the scraper *and* serves the site locally, opening
-`http://localhost:3000/host.html`. Players open
+**Recommended (reliable):** the host runs the one local server, which serves both the scraper
+and the site, opening `http://localhost:8787/host.html`. Players open
 `https://<user>.github.io/<repo>/play.html`. The host's call to the scraper is then a plain
 same-origin localhost request — no mixed content, no Private Network Access preflight. Both
 sides reach the same Firebase room, so the split origin is invisible to the game.
@@ -167,7 +189,7 @@ You do not need a real Firebase project to develop or test:
 npx firebase-tools emulators:start --project whose-tiktok-dev
 ```
 
-Then append `?emu=1` to the URL — `http://localhost:3000/host.html?emu=1`. The flag is stored in
+Then append `?emu=1` to the URL — `http://localhost:8787/host.html?emu=1`. The flag is stored in
 `sessionStorage` for the tab, so navigating to `play.html` stays on the emulator.
 
 Emulator mode is opt-in by query param rather than inferred from the hostname on purpose: the
@@ -270,7 +292,7 @@ Note `node --test test/` (a bare directory) does **not** work on Node 24 — it 
 argument as a file, not a directory to recurse. Use `node --test` with no argument for
 auto-discovery, or quote a glob as above.
 
-`e2e.mjs` needs the emulator, a static server on :3000 and the scraper on :8787 all running. It
+`e2e.mjs` needs the server on :8787 running (plus the emulator, unless you pass `--prod`). It
 drives one host and two players in three **isolated** browser contexts — isolation matters,
 because Firebase persists the anonymous session per origin, so two tabs in one profile would
 silently be the same player. It writes screenshots to `test/out/`.

@@ -7,10 +7,19 @@
 // Runs on http://localhost:8787. One scrape at a time (see QUEUE).
 
 import express from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { scrape, browserState, warmup, closeBrowser, ERRORS } from './tiktok.mjs';
 import { readCache, writeCache } from './cache.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
+
+// The host screen is served from this same process, so the host needs ONE thing
+// running and no second static server. It also makes the host page same-origin with
+// the scraper, so its /scrape call involves no CORS and no Private Network Access
+// preflight at all. Players still load the site from GitHub Pages; that path is what
+// the CORS allowlist below is for.
+const DOCS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'docs');
 
 // ---------------------------------------------------------------------------
 // CORS — allowlist only. NEVER '*'.
@@ -141,6 +150,11 @@ app.post('/scrape', async (req, res) => {
   }
 });
 
+// Static site, mounted AFTER the API routes so it can never shadow them. Serves exact
+// paths only — no clean-URL rewriting — which is what GitHub Pages does, so the local
+// host screen and the deployed player screen behave identically.
+app.use(express.static(DOCS_DIR, { extensions: false, redirect: false }));
+
 // Any unhandled error anywhere still comes back as a code.
 app.use((err, req, res, _next) => {
   console.error('[server] unhandled:', String(err?.message || err));
@@ -148,7 +162,8 @@ app.use((err, req, res, _next) => {
 });
 
 const server = app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[server] whose-tiktok scraper listening on http://localhost:${PORT}`);
+  console.log(`[server] whose-tiktok listening on http://localhost:${PORT}`);
+  console.log(`[server] host screen: http://localhost:${PORT}/host.html`);
   console.log(`[server] cors: localhost:* + ${GH_PAGES_ORIGIN || 'https://<user>.github.io'}`);
   // Cold-start the browser once, in the background, so the first real scrape is not
   // paying for the launch. /health reports "cold" until this resolves.

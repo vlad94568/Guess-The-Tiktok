@@ -94,6 +94,12 @@ th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--lin
 
 .countdown { font-size: 3em; font-weight: bold; font-variant-numeric: tabular-nums; }
 
+.watch-link { font-size: 1.3em; color: var(--muted); }
+.watch-link:hover { color: var(--fg); }
+/* Centred under the embed, which is itself centred; left as-is on the reveal screen
+   where the surrounding text is left-aligned. */
+#view-playing .watch-link { display: block; text-align: center; }
+
 /* --- player screen: large tap targets --- */
 .vote-btn {
   width: 100%;
