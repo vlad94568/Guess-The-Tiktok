@@ -36,10 +36,15 @@ const S = {
   players: {},
   offset: 0, // server clock - local clock, ms
   round: null, // index
+  // How many rounds were ACTUALLY planned. Not the same as meta.roundCount: game.js
+  // rounds the request to a multiple of the player count so everybody owns the same
+  // number of rounds, so the plan is the only honest total.
+  totalRounds: null,
   roundPlan: null, // { videoId, ownerUid } for the current round
   votes: {},
   phase: null,
   advancing: false, // re-entrancy guard around the lock/score/reveal transition
+  deleteArmed: false, // is the room set to delete itself when this host disconnects?
   unsubRound: [],
 };
 
@@ -185,6 +190,7 @@ const poolBreakdown = {};
 
 async function buildPools() {
   await db.setStatus(S.code, 'loading');
+  $('loading-note').innerHTML = ''; // a previous game's notice must not leak into this one
   const entries = Object.entries(S.players);
 
   // Mark everyone pending so the loading screen has rows immediately.
@@ -216,10 +222,13 @@ async function buildPools() {
     await db.setStatus(S.code, 'lobby');
     return;
   }
-  if (plan.clamped)
+  // Shown whenever the plan differs from the request in EITHER direction — it can now be
+  // longer than asked for (more players than rounds) as well as shorter.
+  if (plan.message)
     $('loading-note').innerHTML =
       `<div class="notice notice-warn host-big">${esc(plan.message)}</div>`;
 
+  S.totalRounds = plan.rounds.length;
   await db.writePlan(S.code, plan.rounds);
   await db.setCurrentRound(S.code, 0);
   await db.setStatus(S.code, 'playing');
@@ -310,9 +319,34 @@ async function lockAndReveal() {
   await db.setRoundPhase(S.code, S.round, 'reveal');
 }
 
+/**
+ * How many rounds the stored plan actually holds.
+ *
+ * A host that reloads mid-game has no S.totalRounds, and meta.roundCount is the REQUESTED
+ * count, which the equal-share rounding may have moved either way. The plan itself is the
+ * only truth, so probe it. Bounded, and only ever runs once per page load.
+ */
+async function countPlannedRounds() {
+  // The plan can be LONGER than meta.roundCount — with more players than requested rounds
+  // everyone still gets one each — so the player count has to bound this too, or the
+  // probe stops short and the header reads "Round 9 of 6".
+  const cap =
+    Math.max(
+      Number(S.meta?.roundCount) || 0,
+      Object.keys(S.players).length,
+      (S.round ?? 0) + 1
+    ) *
+      2 +
+    8;
+  let n = 0;
+  while (n < cap && (await db.getRound(S.code, n))) n++;
+  return n;
+}
+
 async function nextRound() {
   const next = S.round + 1;
-  if (next >= S.meta.roundCount || !(await db.getRound(S.code, next))) {
+  // The plan, not meta.roundCount, decides when the game is over.
+  if (!(await db.getRound(S.code, next))) {
     await db.setStatus(S.code, 'finished');
     return;
   }
@@ -327,6 +361,10 @@ async function nextRound() {
 function render() {
   if (!S.meta) return;
   const st = S.meta.status;
+
+  // Whether this room should self-destruct depends only on its status, so re-evaluate it
+  // on every event rather than at the handful of places status happens to change.
+  syncRoomTeardown();
 
   if (st === 'lobby') {
     show('lobby');
@@ -356,7 +394,7 @@ function render() {
 
 function renderPlaying() {
   $('round-num').textContent = S.round + 1;
-  $('round-total').textContent = S.meta.roundCount;
+  $('round-total').textContent = S.totalRounds ?? S.meta.roundCount;
   // Host screen only — this URL carries the videoId.
   if (S.roundPlan) $('watch-link').href = watchUrl(S.roundPlan.videoId);
 
@@ -376,7 +414,7 @@ function renderPlaying() {
 function renderReveal() {
   const ownerUid = S.roundPlan?.ownerUid;
   $('reveal-round-num').textContent = S.round + 1;
-  $('reveal-round-total').textContent = S.meta.roundCount;
+  $('reveal-round-total').textContent = S.totalRounds ?? S.meta.roundCount;
   $('reveal-owner').textContent = S.players[ownerUid]?.name ?? '???';
   if (S.roundPlan) $('reveal-watch-link').href = watchUrl(S.roundPlan.videoId);
 
@@ -413,6 +451,121 @@ function renderFinished() {
   $('final-board').innerHTML = boardHtml();
 }
 
+// ===========================================================================
+// room teardown
+// ===========================================================================
+
+/**
+ * Statuses in which the room is disposable — losing the host should take it with them.
+ *
+ * 'lobby' matters more than it looks: this page mints a room the moment it LOADS, before
+ * anyone has joined, so opening the host screen and closing it again is by far the most
+ * common way a room gets orphaned.
+ *
+ * 'loading' and 'playing' are deliberately absent. onDisconnect has no grace period — it
+ * fires as soon as Firebase notices the socket is gone and cannot tell a closed tab from
+ * a twenty-second wifi drop — so arming it during a game would let a blip delete a live
+ * game, scores and all. Those rooms are cleaned up by sweepMyOldRooms() instead.
+ */
+const DISPOSABLE = new Set(['lobby', 'finished']);
+
+let teardownBusy = false;
+
+/**
+ * Point the room's onDisconnect registration at whatever its current status calls for.
+ *
+ * Called from render(), so it runs on every database event and must be cheap and
+ * re-entrant. `S.deleteArmed = null` means "unknown", which forces a re-registration —
+ * that is what a reconnect needs, since reconnecting drops every onDisconnect this
+ * client had registered.
+ */
+async function syncRoomTeardown() {
+  if (!S.code || teardownBusy) return;
+  const want = DISPOSABLE.has(S.meta?.status);
+  if (want === S.deleteArmed) return;
+
+  teardownBusy = true;
+  try {
+    if (want) {
+      await db.armRoomDeleteOnDisconnect(S.code);
+    } else {
+      await db.cancelRoomDeleteOnDisconnect(S.code);
+      // NOT optional. cancel() clears queued onDisconnect writes at that location AND
+      // everything beneath it, so cancelling at rooms/<code> also drops the
+      // meta/hostOnline registration sitting under it. Without this re-claim, a host who
+      // dropped mid-game would leave hostOnline stuck at true and no phone would ever
+      // learn the host had gone.
+      await db.claimHostPresence(S.code);
+    }
+    S.deleteArmed = want;
+  } catch (e) {
+    // Housekeeping must never break the game. Worst case the room outlives it, which is
+    // the behaviour this whole mechanism replaced.
+    console.warn('could not update room cleanup:', e.message);
+  } finally {
+    teardownBusy = false;
+  }
+}
+
+// --- rooms this browser created, so it can clean up after itself -----------
+const LS_ROOMS = 'wt_host_rooms';
+
+function readMyRooms() {
+  try {
+    const v = JSON.parse(localStorage.getItem(LS_ROOMS) || '[]');
+    return Array.isArray(v) ? v.filter((c) => typeof c === 'string' && /^[A-Z]{4}$/.test(c)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeMyRooms(codes) {
+  // Capped: this list exists only to find rooms to delete, and an unbounded one would
+  // mean an unbounded number of reads every time the host page loads.
+  try {
+    localStorage.setItem(LS_ROOMS, JSON.stringify(codes.slice(-20)));
+  } catch {
+    // Private browsing / storage disabled. Cleanup degrades, nothing breaks.
+  }
+}
+
+const rememberMyRoom = (code) => writeMyRooms([...readMyRooms().filter((c) => c !== code), code]);
+const forgetMyRooms = (codes) => {
+  const drop = new Set(codes);
+  writeMyRooms(readMyRooms().filter((c) => !drop.has(c)));
+};
+
+/**
+ * Delete rooms this browser created and then abandoned mid-game.
+ *
+ * A room in 'loading' or 'playing' is never armed to self-destruct (see DISPOSABLE), so a
+ * host who closes the tab mid-game leaves it behind. Anonymous auth is persistent, so the
+ * next time this same browser opens the host page it is still the same uid — and the
+ * delete-only rule lets a host remove their own rooms at any age. That makes this the
+ * cheapest possible sweeper: no rules relaxation, and it can only ever touch rooms this
+ * browser made.
+ *
+ * Must be started BEFORE the new room is created, so the list it snapshots cannot contain
+ * the room this session is about to use.
+ */
+async function sweepMyOldRooms() {
+  const codes = readMyRooms();
+  if (!codes.length) return;
+
+  const done = [];
+  for (const code of codes) {
+    try {
+      const meta = await db.getMeta(code);
+      if (meta && meta.hostUid !== S.uid) continue; // somebody else's now — leave it alone
+      if (meta) await db.deleteRoom(code);
+      done.push(code); // deleted, or already gone
+    } catch (e) {
+      console.warn(`could not clean up room ${code}:`, e.message);
+    }
+  }
+  forgetMyRooms(done);
+}
+
 // There is deliberately no countdown. A round ends when every eligible player has
 // voted, or when the host presses "Reveal now" — which is the only thing preventing one
 // asleep phone from stalling the game forever.
@@ -440,14 +593,24 @@ function renderFinished() {
   db.watchConnected(async (connected) => {
     if (!connected || !S.code) return;
     try {
+      // A reconnect drops every onDisconnect this client had registered. Claim presence
+      // again, then let syncRoomTeardown re-register the deletion if this room's status
+      // still calls for one. `null` is "unknown", which forces it to act.
       await db.claimHostPresence(S.code);
+      S.deleteArmed = null;
+      await syncRoomTeardown();
     } catch (e) {
       console.warn('could not claim host presence:', e.message);
     }
   });
 
+  // Started before createRoom so the list it reads cannot contain this session's room.
+  // Fire and forget: a slow sweep must not hold up the join code appearing on screen.
+  sweepMyOldRooms().catch((e) => console.warn('room cleanup:', e.message));
+
   try {
     S.code = await createRoom();
+    rememberMyRoom(S.code);
   } catch (e) {
     const denied = /PERMISSION_DENIED/i.test(e.message || '');
     return fatal(
@@ -491,6 +654,8 @@ function renderFinished() {
       S.round = i;
       S.roundPlan = await db.getRound(S.code, i);
     }
+    // Reload recovery: this page did not build the plan, so it has to measure it.
+    if (S.totalRounds === null) S.totalRounds = await countPlannedRounds();
     watchRound(i);
     render();
   });
@@ -510,13 +675,34 @@ function renderFinished() {
   $('btn-next').addEventListener('click', () => nextRound());
   $('btn-reveal').addEventListener('click', () => lockAndReveal());
 
+  $('btn-close-room').addEventListener('click', async () => {
+    if (!confirm('Delete this room and everyone\'s data from the database? The game cannot be resumed afterwards.'))
+      return;
+    $('btn-close-room').disabled = true;
+    $('btn-newgame').disabled = true;
+    try {
+      const code = S.code;
+      await db.deleteRoom(code);
+      S.code = null; // stop every watcher from trying to re-create anything
+      forgetMyRooms([code]); // nothing left for the next visit to sweep
+      $('close-room-note').textContent = 'Room deleted. You can close this tab.';
+    } catch (e) {
+      $('btn-close-room').disabled = false;
+      $('btn-newgame').disabled = false;
+      $('close-room-note').textContent = `Could not delete the room: ${e.message}`;
+    }
+  });
+
   $('btn-newgame').addEventListener('click', async () => {
+    // No teardown bookkeeping here: finished and lobby are both disposable, so
+    // syncRoomTeardown leaves the registration exactly as it is across the reset.
     // Drop the previous game's round watchers first. They point at paths that
     // resetRoom is about to delete; left attached they fire with null, clobber S.phase,
     // and stack up another set on every replay.
     for (const u of S.unsubRound) u();
     S.unsubRound = [];
     S.round = null;
+    S.totalRounds = null;
     S.roundPlan = null;
     S.phase = null;
     S.votes = {};

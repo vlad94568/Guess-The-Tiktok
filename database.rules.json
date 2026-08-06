@@ -5,6 +5,8 @@
 
     "rooms": {
       "$code": {
+        ".write": "auth != null && !newData.exists() && root.child('rooms').child($code).child('meta').child('hostUid').val() === auth.uid",
+
         "meta": {
           ".read": "auth != null",
           ".write": "auth != null && $code.matches(/^[A-Z]{4}$/) && newData.child('hostUid').val() === auth.uid && (!data.exists() || data.child('hostUid').val() === auth.uid) && (!data.child('createdAt').exists() || data.child('createdAt').val() + 43200000 > now)",

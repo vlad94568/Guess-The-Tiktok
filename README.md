@@ -294,6 +294,57 @@ and rejects `newData.val() === auth.uid` — no voting for yourself.
 
 **`currentRound`** — readable by all, writable by host only.
 
+**`rooms/$code` itself — delete-only, host-only.** No rule grants a *write* at the room level;
+the only thing permitted there is a **removal**, and only by the room's own host:
+
+```
+".write": "auth != null && !newData.exists() && ...hostUid === auth.uid"
+```
+
+The `!newData.exists()` clause is the entire safety of it. Write access at this level would
+cascade to every child and let the host forge votes, scores and pools in a single `PUT`,
+bypassing all the rules above. Restricting it to deletions means the room can be binned in one
+atomic operation and nothing else changes. `test/rules.test.mjs` proves both halves: the host can
+delete, and the same permission refuses a room-level write.
+
+---
+
+## What is stored, and when it goes away
+
+| Where | What | Lifetime |
+|---|---|---|
+| Firebase `rooms/$CODE` | player names, TikTok @handles, scraped video ids, votes, scores | **deleted when the host closes the tab** (see below) |
+| `scraper/.cache/*.json` | one file per `handle:mode` — the handle and up to 100 video ids | 24h TTL, and every stale file is swept on server start |
+| `scraper/.cache/browser-profile/` | ~84 MB Chromium profile, including TikTok cookies | **kept indefinitely, on purpose** |
+| player's phone, `localStorage` | that player's own room code, name and handle | until they clear site data |
+
+The room deletion is registered with Firebase as an `onDisconnect`, so it is the *server* that
+removes the data — it fires whether the host closes the tab, sleeps the laptop or drops off the
+network entirely.
+
+It is armed while the room's status is **lobby** or **finished**, and deliberately *not* while it
+is **loading** or **playing**. `onDisconnect` has no grace period: it fires as soon as Firebase
+notices the socket is gone and cannot tell a closed tab from a twenty-second wifi drop. Arming it
+mid-game would mean a blip deletes a live game, scores and all — that case is what the
+`hostOnline` flag is for instead.
+
+Covering `lobby` matters more than it sounds, because **host.html mints a room the moment it
+loads**, before anyone joins. Opening the host screen and closing it again is the single most
+common way a room gets orphaned, and that now cleans itself up.
+
+That leaves one hole: a host who closes the tab *mid-game*. Anonymous auth is persistent, so the
+host page remembers the codes it created (`localStorage`, capped at 20) and deletes any of its own
+that are still lying around the next time it loads. It can only ever touch rooms that browser
+created, and the delete rule carries no age limit — which is the point, since abandoned rooms are
+by definition the old ones.
+
+The **Delete room & finish** button on the final-scores screen does the whole thing immediately.
+
+The browser profile is the deliberate exception. It is what keeps TikTok from throwing a captcha
+at every scrape, and rebuilding it costs a cold start plus a much higher block rate. Delete
+`scraper/.cache/browser-profile/` by hand if you want the TikTok cookies gone; the scraper will
+recreate an empty one on the next run.
+
 ---
 
 ## Tests

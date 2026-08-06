@@ -106,17 +106,18 @@ export const RESPONSE_FIELDS = {
 // ===========================================================================
 
 const LIMITS = {
-  // Final ids kept per source, chosen at RANDOM from everything fetched.
-  PER_SOURCE_VIDEOS: 50,
-  // 'both' keeps up to 50 reposts + 50 likes, deduped.
+  // Final ids kept per PLAYER, chosen at RANDOM from everything fetched. This is the
+  // target for EVERY mode, not per source: 'both' with private likes must still return
+  // 100 reposts, otherwise that player's pool is half the size of everyone else's.
   MAX_VIDEOS: 100,
-  // Fetch deep before sampling, so the random 50 is drawn from someone's whole history
-  // rather than just their recent activity. 1000 is well past what most accounts have;
-  // the time budget below is what actually stops it in practice.
+  // 'both' only: how many to take from each source before backfilling. An even split is
+  // taken first so a player with 400 reposts and 12 likes still gets all 12 likes in,
+  // then whichever source has ids to spare tops the total back up to MAX_VIDEOS.
+  PER_SOURCE_VIDEOS: 50,
+  // Fetch deep before sampling, so the random sample is drawn from someone's whole
+  // history rather than just their recent activity. 1000 is well past what most accounts
+  // have; the time budget below is what actually stops it in practice.
   MAX_FETCH: 1000,
-  // Likes only: ignore anything liked longer ago than this. Reposts CANNOT be filtered
-  // this way — see LIKES_WINDOW_DAYS note in collectLikes.
-  LIKES_WINDOW_DAYS: 90,
   // A page is ~30 ids and costs ~0.6s including the polite delay, so 1000 ids is ~34
   // pages ≈ 20s per source. This budget is the real limit on depth: whatever has been
   // collected when it expires is what gets sampled.
@@ -367,18 +368,18 @@ async function openProfile(ctx, handle) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Page an item_list endpoint to the end, or until MAX_FETCH / the time budget stops it.
+ *
+ * There is deliberately no date filter. Sampling must be uniform over a player's WHOLE
+ * liked/reposted history — an earlier version preferred likes from the last 90 days,
+ * which meant an account that has been quiet for a year served up the same handful of
+ * old videos every game instead of a random draw from all of them.
+ *
  * @returns {Promise<{ids: string[], deadRoute: boolean, pages: object[]}>}
  */
-/**
- * @param {number|null} sinceMs Stop paging once the server's cursor predates this.
- *   ONLY meaningful for likes, whose cursor is a millisecond "liked at" timestamp
- *   counting backwards. The reposts cursor is a plain offset (0, 30, 60...) and carries
- *   no time at all, so passing sinceMs for reposts would silently truncate the list
- *   after one page.
- */
-async function paginate(page, route, template, secUid, sinceMs = null) {
+async function paginate(page, route, template, secUid) {
   return page.evaluate(
-    async ({ origin, route, template, secUid, limits, fields, sinceMs }) => {
+    async ({ origin, route, template, secUid, limits, fields }) => {
       const ids = [];
       const pages = [];
       let cursor = '0';
@@ -435,16 +436,12 @@ async function paginate(page, route, template, secUid, sinceMs = null) {
         // likes = millisecond timestamp. Computing it ourselves breaks likes.
         cursor = String(body[fields.CURSOR]);
 
-        // Likes come back newest-first and the cursor IS the "liked at" time, so once it
-        // passes the cutoff every remaining page is older still.
-        if (sinceMs && Number(cursor) > 0 && Number(cursor) < sinceMs) break;
-
         await new Promise((r) => setTimeout(r, limits.INTER_PAGE_DELAY_MS));
       }
 
       return { ids: ids.slice(0, limits.MAX_FETCH), deadRoute, pages };
     },
-    { origin: ROUTES.ORIGIN, route, template, secUid, limits: LIMITS, fields: RESPONSE_FIELDS, sinceMs }
+    { origin: ROUTES.ORIGIN, route, template, secUid, limits: LIMITS, fields: RESPONSE_FIELDS }
   );
 }
 
@@ -491,7 +488,8 @@ async function domFallback(page) {
 // ---------------------------------------------------------------------------
 
 /**
- * Reposts, UNFILTERED, randomly sampled down to PER_SOURCE_VIDEOS.
+ * EVERY repost we can reach, unsampled and UNFILTERED. Sampling is the caller's job,
+ * because how many to keep depends on the mode.
  *
  * No date window is applied, and none can be: VERIFIED 2026-08-02 the repost item
  * carries only `createTime` (when the VIDEO was posted) and the cursor is a plain
@@ -503,7 +501,7 @@ async function collectReposts(page, info, template) {
   if (!template) {
     // Could not harvest device params; try the one grid that does render.
     const dom = await domFallback(page);
-    if (dom.length) return sample(dom, LIMITS.PER_SOURCE_VIDEOS);
+    if (dom.length) return dom;
     throw new ScrapeError(ERRORS.REPOSTS_UNSUPPORTED);
   }
 
@@ -515,11 +513,12 @@ async function collectReposts(page, info, template) {
 
   if (ids.length === 0) {
     const dom = await domFallback(page);
-    if (dom.length) return sample(dom, LIMITS.PER_SOURCE_VIDEOS);
+    if (dom.length) return dom;
   }
-  return sample(ids, LIMITS.PER_SOURCE_VIDEOS);
+  return ids;
 }
 
+/** EVERY like we can reach, unsampled. Same contract as collectReposts. */
 async function collectLikes(page, info, template) {
   // NON-NEGOTIABLE: check openFavorite BEFORE calling the endpoint.
   // VERIFIED 2026-08-01: with private likes the endpoint returns HTTP 200,
@@ -530,32 +529,53 @@ async function collectLikes(page, info, template) {
 
   if (!template) throw new ScrapeError(ERRORS.NO_VIDEOS);
 
-  // Prefer RECENT likes, then take a random sample of them.
-  //
-  // A time window is possible for likes and not for reposts, because the likes cursor is
-  // a millisecond "liked at" timestamp counting backwards — VERIFIED 2026-08-01:
-  // 0 -> 1785386989185 -> 1785258440000.
-  //
-  // IMPORTANT LIMITATION: individual items carry no like-time, only the page boundary
-  // does (`createTime` on an item is when the VIDEO was posted). So the window can only
-  // be applied at PAGE granularity — we stop paging once the cursor predates the cutoff,
-  // but cannot drop older entries from within a page we already accepted.
-  //
-  // VERIFIED 2026-08-02 against @fitness, whose most recent like is from 2023: the
-  // window then matches only the first page, and every id in it is older than the
-  // cutoff. Returning those 30 stale ids would be worse than ignoring the window, so if
-  // the window does not yield a full sample we re-fetch unwindowed and sample from the
-  // whole pool instead — 50 random likes out of 234 beats 30 arbitrary old ones.
-  const sinceMs = Date.now() - LIMITS.LIKES_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-  const windowed = await paginate(page, ROUTES.LIKES, template, info.secUid, sinceMs);
+  // No recency window. An earlier version paged only as far back as 90 days and fell back
+  // to the full history when that came up short, which biased the draw towards whatever
+  // the player happened to like lately. VERIFIED 2026-08-02 against @fitness, whose most
+  // recent like is from 2023: the window matched exactly one page, so the "random 50"
+  // was in fact the same 30 old videos every single game. Drawing from everything is
+  // both fairer and one pagination pass cheaper.
+  const { ids } = await paginate(page, ROUTES.LIKES, template, info.secUid);
+  return ids;
+}
 
-  if (windowed.ids.length >= LIMITS.PER_SOURCE_VIDEOS) {
-    return sample(windowed.ids, LIMITS.PER_SOURCE_VIDEOS);
+/**
+ * Merge two source pools into one final list of at most `max` ids, at random.
+ *
+ * Take up to `perSource` from each pool first so neither source can crowd the other out,
+ * then top the result up to `max` from whatever ids are left over in EITHER pool. That
+ * backfill is the whole point: without it a player whose likes are private stops at
+ * `perSource` videos while everyone else gets `max`, and pool size is what decides how
+ * many rounds a player can own.
+ */
+function mergePools(pools, perSource, max) {
+  const seen = new Set();
+  const out = [];
+  const spare = [];
+
+  for (const pool of pools) {
+    let taken = 0;
+    // sample(pool, pool.length) is a full shuffle, so both the first slice and the
+    // leftovers are in random order.
+    for (const id of sample(pool, pool.length)) {
+      if (taken < perSource && !seen.has(id)) {
+        seen.add(id);
+        out.push(id);
+        taken++;
+      } else {
+        spare.push(id);
+      }
+    }
   }
 
-  const all = await paginate(page, ROUTES.LIKES, template, info.secUid);
-  const pool = all.ids.length >= windowed.ids.length ? all.ids : windowed.ids;
-  return sample(pool, LIMITS.PER_SOURCE_VIDEOS);
+  for (const id of sample(spare, spare.length)) {
+    if (out.length >= max) break;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+
+  return out.slice(0, max);
 }
 
 // ---------------------------------------------------------------------------
@@ -582,20 +602,24 @@ export async function scrape({ handle, mode }) {
     // working union, which is exactly the confusion this reports away.
     const sources = {};
 
+    // Every mode aims for the SAME MAX_VIDEOS total. A single-source mode takes the whole
+    // allowance from that one source rather than half of it.
     if (mode === 'reposts') {
-      videos = await collectReposts(page, info, template);
+      videos = sample(await collectReposts(page, info, template), LIMITS.MAX_VIDEOS);
       sources.reposts = videos.length;
     } else if (mode === 'likes') {
-      videos = await collectLikes(page, info, template);
+      videos = sample(await collectLikes(page, info, template), LIMITS.MAX_VIDEOS);
       sources.likes = videos.length;
     } else {
-      // mode 'both' = up to 50 reposts + 50 likes, deduped (so 100 when both halves are
-      // full; fewer if a source is short or the two overlap).
+      // mode 'both' = an even 50/50 split where possible, then backfilled from whichever
+      // source has ids to spare, so the total still reaches MAX_VIDEOS.
       //
       // A failure in ONE half is tolerated as long as
       // the other half yields something — a player with public reposts and private
       // likes (by far the most common combination) should still get a playable round
-      // rather than an error.
+      // rather than an error. That player now gets a FULL pool out of reposts alone:
+      // capping them at half would leave them with fewer videos, and therefore fewer
+      // ownable rounds, than everyone else in the room.
       //
       // Run the halves SEQUENTIALLY, not with Promise.all: they share one page and
       // firing both pagination loops at once doubles the instantaneous request rate
@@ -609,13 +633,20 @@ export async function scrape({ handle, mode }) {
         const codes = results.map((r) => r?.code).filter(Boolean);
         throw new ScrapeError(codes.find((c) => c !== ERRORS.NO_VIDEOS) || codes[0] || ERRORS.NO_VIDEOS);
       }
-      sources.reposts = Array.isArray(reposts) ? reposts.length : reposts?.code || 'failed';
-      sources.likes = Array.isArray(likes) ? likes.length : likes?.code || 'failed';
 
-      videos = [...new Set([...(Array.isArray(reposts) ? reposts : []), ...(Array.isArray(likes) ? likes : [])])].slice(
-        0,
-        LIMITS.MAX_VIDEOS
-      );
+      const repostPool = Array.isArray(reposts) ? reposts : [];
+      const likePool = Array.isArray(likes) ? likes : [];
+      videos = mergePools([repostPool, likePool], LIMITS.PER_SOURCE_VIDEOS, LIMITS.MAX_VIDEOS);
+
+      // Report what each source CONTRIBUTED to the final list, not how much it fetched —
+      // the loading screen is there to show that 'both' really was both.
+      const kept = new Set(videos);
+      sources.reposts = Array.isArray(reposts)
+        ? repostPool.filter((id) => kept.has(id)).length
+        : reposts?.code || 'failed';
+      sources.likes = Array.isArray(likes)
+        ? likePool.filter((id) => kept.has(id)).length
+        : likes?.code || 'failed';
     }
 
     if (!videos || videos.length === 0) throw new ScrapeError(ERRORS.NO_VIDEOS);

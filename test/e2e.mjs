@@ -34,7 +34,11 @@ const SPLIT = process.argv.includes('--split');
 const PLAY_BASE = SPLIT ? 'https://vlad94568.github.io/Guess-The-Tiktok' : BASE;
 const OUR_ORIGINS = ['localhost:8787', 'vlad94568.github.io'];
 const HANDLES = ['zachking', 'tiktok']; // both verified to have public reposts
-const ROUNDS = 3;
+// Must divide evenly by the 2 players below. game.js gives every owner the SAME number of
+// rounds, so it rounds the request to a multiple of the player count — asking for 3 with
+// two players yields 2, and the fixed sequence of next/reveal clicks below would then run
+// off the end of the game. 4 gives two rounds each with one to spare for the tail loop.
+const ROUNDS = 4;
 
 mkdirSync('test/out', { recursive: true });
 
@@ -277,7 +281,20 @@ for (const [i, p] of players.entries()) {
   await p.page.locator('.vote-btn:not([disabled])').first().click().catch(() => {});
 }
 await host.page.waitForSelector('#view-reveal:not(.hidden)', { timeout: 40000 });
-await host.page.click('#btn-next');
+
+// Drive whatever rounds are left rather than assuming a fixed count: the total is
+// rounded to a multiple of the player count, so it is not simply ROUNDS.
+for (let guard = 0; guard < ROUNDS + 2; guard++) {
+  await host.page.click('#btn-next');
+  await host.page.waitForSelector('#view-playing:not(.hidden), #view-finished:not(.hidden)', { timeout: 20000 });
+  if (await visible(host.page, '#view-finished')) break;
+  for (const p of players) {
+    if (await visible(p.page, '#sit-out')) continue;
+    await p.page.waitForSelector('.vote-btn:not([disabled])', { timeout: 10000 }).catch(() => {});
+    await p.page.locator('.vote-btn:not([disabled])').first().click().catch(() => {});
+  }
+  await host.page.waitForSelector('#view-reveal:not(.hidden)', { timeout: 40000 });
+}
 await host.page.waitForSelector('#view-finished:not(.hidden)', { timeout: 20000 });
 const winner = await text(host.page, '#winner');
 const finalBoard = await text(host.page, '#final-board');

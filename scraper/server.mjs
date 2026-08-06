@@ -10,7 +10,7 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scrape, browserState, warmup, closeBrowser, ERRORS } from './tiktok.mjs';
-import { readCache, writeCache } from './cache.mjs';
+import { readCache, writeCache, sweepCache } from './cache.mjs';
 
 const PORT = Number(process.env.PORT || 8787);
 
@@ -168,6 +168,11 @@ const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`[server] whose-tiktok listening on http://localhost:${PORT}`);
   console.log(`[server] host screen: http://localhost:${PORT}/host.html`);
   console.log(`[server] cors: localhost:* + ${GH_PAGES_ORIGIN || 'https://<user>.github.io'}`);
+  // Bin any scrape results that can no longer be served. They hold player handles and
+  // video ids, so there is no reason to keep them sitting on disk between games.
+  sweepCache()
+    .then((n) => n && console.log(`[server] cache: removed ${n} stale entr${n === 1 ? 'y' : 'ies'}`))
+    .catch(() => {});
   // Cold-start the browser once, in the background, so the first real scrape is not
   // paying for the launch. /health reports "cold" until this resolves.
   warmup()

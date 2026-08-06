@@ -306,6 +306,76 @@ test('meta still accepts a legacy timerSecs field (deploy-order safety)', async 
   await asAdmin('rooms/LEGA', 'DELETE');
 });
 
+// --- room deletion ---------------------------------------------------------
+// The host must be able to bin a finished room (it holds every player's name and
+// @handle), but that permission must not become a general write at the room level.
+
+test('the host can delete their own room outright', async () => {
+  const r = await call(`rooms/${CODE}`, { as: HOST, method: 'DELETE' });
+  assert.ok(OK(r), `host could not delete their room: ${r.status} ${r.text}`);
+  const left = await asAdmin(`rooms/${CODE}`);
+  assert.equal(left.text.trim(), 'null', `room survived deletion: ${left.text}`);
+});
+
+test('the host can still delete a room past the 12-hour write window', async () => {
+  // Abandoned rooms are by definition the old ones, and every other write rule refuses
+  // a room older than 12h. If the delete rule carried the same clause, the rooms most in
+  // need of cleaning up would be the exact ones that could never be cleaned up.
+  await asAdmin(`rooms/${CODE}/meta/createdAt`, 'PUT', Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const r = await call(`rooms/${CODE}`, { as: HOST, method: 'DELETE' });
+  assert.ok(OK(r), `stale room could not be deleted: ${r.status} ${r.text}`);
+  const left = await asAdmin(`rooms/${CODE}`);
+  assert.equal(left.text.trim(), 'null', `stale room survived: ${left.text}`);
+});
+
+test('a hostOnline write cannot resurrect a deleted room', async () => {
+  // The host keeps BOTH onDisconnect registrations: hostOnline=false and the room delete.
+  // Their firing order is not guaranteed, so if the delete lands first the hostOnline
+  // write must be refused — otherwise it would recreate rooms/$code/meta/hostOnline as a
+  // stray node and defeat the whole cleanup. The meta write rule reads hostUid, which no
+  // longer exists after the delete, so it is refused. Proven here rather than assumed.
+  await asAdmin(`rooms/${CODE}`, 'DELETE');
+  const r = await write(`rooms/${CODE}/meta/hostOnline`, HOST, false);
+  assert.ok(DENIED(r), `hostOnline recreated a deleted room: ${r.status} ${r.text}`);
+  const left = await asAdmin(`rooms/${CODE}`);
+  assert.equal(left.text.trim(), 'null', `deleted room came back: ${left.text}`);
+});
+
+test('a player cannot delete the room', async () => {
+  const r = await call(`rooms/${CODE}`, { as: P2, method: 'DELETE' });
+  assert.ok(DENIED(r), `a non-host deleted the room: ${r.status} ${r.text}`);
+  const left = await asAdmin(`rooms/${CODE}/meta/code`);
+  assert.ok(left.text.includes(CODE), 'room was destroyed by a player');
+});
+
+test('the delete permission does not let the host WRITE at the room level', async () => {
+  // The whole safety of the rule is the `!newData.exists()` clause. Without it, write
+  // access at rooms/$code would cascade and let the host forge votes, scores and pools
+  // in one PUT, bypassing every per-child rule below it.
+  const forged = await write(`rooms/${CODE}`, HOST, {
+    meta: {
+      code: CODE,
+      hostUid: HOST,
+      mode: 'reposts',
+      roundCount: 3,
+      status: 'playing',
+      createdAt: Date.now(),
+    },
+    rounds: { 0: { videoId: '7301234567890123456', ownerUid: HOST, phase: 'playing', votes: { [P2]: HOST } } },
+  });
+  assert.ok(DENIED(forged), `host wrote a whole room in one go: ${forged.status} ${forged.text}`);
+});
+
+test('a host cannot delete somebody ELSE\'s room', async () => {
+  await asAdmin('rooms/OTHR', 'PUT', {
+    meta: { code: 'OTHR', hostUid: P1, mode: 'reposts', roundCount: 3, status: 'lobby', createdAt: Date.now() },
+    players: { [P1]: { name: 'One', handle: 'one' } },
+  });
+  const r = await call('rooms/OTHR', { as: HOST, method: 'DELETE' });
+  assert.ok(DENIED(r), `deleted a room owned by someone else: ${r.status} ${r.text}`);
+  await asAdmin('rooms/OTHR', 'DELETE');
+});
+
 test('unauthenticated access is refused outright', async () => {
   const r = await fetch(url(`rooms/${CODE}/meta`));
   assert.ok(r.status === 401, `anon read got ${r.status}`);

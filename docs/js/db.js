@@ -110,6 +110,37 @@ export const watchHostOnline = (code, cb) => sub(P.metaHostOnline(code), cb);
 /** Host-only: mark the room closed deliberately (e.g. the host clicked away). */
 export const releaseHostPresence = (code) => set(ref(db, P.metaHostOnline(code)), false);
 
+/**
+ * Host-only: wipe the whole room — meta, players, pool, rounds, votes, the lot.
+ *
+ * The rules permit a write at rooms/$code ONLY when it removes the node (see the
+ * `!newData.exists()` clause), so this is the single operation that can clear everything
+ * atomically. Every other write still has to satisfy the per-child rules.
+ */
+export const deleteRoom = (code) => set(ref(db, P.room(code)), null);
+
+/**
+ * Ask the SERVER to delete the room if this host disappears.
+ *
+ * Armed only while the room is disposable (see DISPOSABLE in host.js). Arming it during a
+ * game would mean a thirty-second wifi drop deletes everybody's scores — a transient
+ * disconnect is what the hostOnline flag is for. Firebase runs this server-side, which is
+ * why it survives cases a beforeunload handler never sees.
+ *
+ * The hostOnline onDisconnect from claimHostPresence is deliberately LEFT IN PLACE
+ * alongside this one. Cancelling it would be tidier if the delete always succeeded, but
+ * an onDisconnect is authorised when it FIRES, not when it is registered — so if the
+ * delete-only rule is not deployed yet, cancelling would leave a room with hostOnline
+ * stuck at true and no way for a player's phone to tell the host had gone. Keeping both
+ * is safe in either order: if the delete lands first, the hostOnline write is refused
+ * (the meta write rule reads hostUid, which no longer exists), so it cannot resurrect a
+ * stray node; if hostOnline lands first, the delete removes it a moment later.
+ */
+export const armRoomDeleteOnDisconnect = (code) => onDisconnect(ref(db, P.room(code))).remove();
+
+/** Undo the above — used when "Play again" brings a finished room back to life. */
+export const cancelRoomDeleteOnDisconnect = (code) => onDisconnect(ref(db, P.room(code))).cancel();
+
 /** Host-side reset for "New Game": clears rounds+pool, keeps players, zeroes scores. */
 export async function resetRoom(code, playerUids) {
   const patch = { rounds: null, pool: null, currentRound: null };

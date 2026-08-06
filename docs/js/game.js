@@ -51,6 +51,9 @@ function pluralise(n, word) {
 /**
  * Build the ordered round list for a game.
  *
+ * Every eligible owner gets the SAME number of rounds, so `rounds.length` is always a
+ * multiple of `eligibleOwners.length` and may end up above or below `roundCount`.
+ *
  * @param {Object} opts
  * @param {Record<string,string[]>} opts.pools  - { uid: [videoId, ...] }, only players whose scrape succeeded
  * @param {number} opts.roundCount              - requested number of rounds
@@ -59,6 +62,7 @@ function pluralise(n, word) {
  *   rounds: Array<{videoId: string, ownerUid: string}>,
  *   requested: number,
  *   available: number,
+ *   perOwner: number,
  *   clamped: boolean,
  *   eligibleOwners: string[],
  *   droppedAmbiguous: string[],
@@ -99,25 +103,28 @@ export function generateRounds({ pools, roundCount } = {}, rng = Math.random) {
   const deck = new Map(); // uid -> shuffled videoIds
   for (const uid of eligibleOwners) deck.set(uid, shuffle(usable.get(uid), rng));
 
-  const totalUsable = eligibleOwners.reduce((n, uid) => n + deck.get(uid).length, 0);
-  const available = Math.min(requested, totalUsable);
-
-  // --- 3. decide HOW MANY rounds each owner gets: round-robin over the shuffled
-  // owners, one at a time, skipping anyone who has run out. This is what makes the
-  // distribution as even as the pool sizes allow.
-  const quota = new Map(eligibleOwners.map((uid) => [uid, 0]));
-  let assigned = 0;
-  while (assigned < available) {
-    let progressed = false;
-    for (const uid of eligibleOwners) {
-      if (assigned >= available) break;
-      if (quota.get(uid) >= deck.get(uid).length) continue;
-      quota.set(uid, quota.get(uid) + 1);
-      assigned++;
-      progressed = true;
-    }
-    if (!progressed) break; // everyone exhausted; can't happen while assigned < available
-  }
+  // --- 3. decide HOW MANY rounds each owner gets: EXACTLY THE SAME NUMBER each.
+  //
+  // Nothing here is "as even as capacity allows" any more, because uneven is unfair.
+  // The owner of a round sits it out and cannot score in it, so a player who owns 4
+  // rounds out of 10 has three fewer chances to score than a player who owns 3. The
+  // total round count is therefore always perOwner * eligibleOwners, and the requested
+  // count is rounded to fit rather than honoured exactly.
+  //
+  // Two things cap perOwner: the requested rounds shared out, and the SMALLEST usable
+  // pool — one player with only 3 videos means everybody owns 3 rounds, since going
+  // past that would have to give someone else a fourth.
+  const ownerCount = eligibleOwners.length;
+  const smallestPool = ownerCount
+    ? Math.min(...eligibleOwners.map((uid) => deck.get(uid).length))
+    : 0;
+  // The max(1, ...) matters when there are more players than requested rounds: a plain
+  // floor gives 0 each and no game at all, so we overshoot the request instead. Equal
+  // and slightly longer beats unequal or empty.
+  const perOwner =
+    ownerCount === 0 || requested === 0
+      ? 0
+      : Math.min(Math.max(1, Math.floor(requested / ownerCount)), smallestPool);
 
   // --- 4. decide the ORDER: shuffle the multiset of owner slots.
   //
@@ -128,7 +135,7 @@ export function generateRounds({ pools, roundCount } = {}, rng = Math.random) {
   // instead means the same owner can occasionally come up twice running — that is the
   // point, not a defect.
   const order = shuffle(
-    [...quota.entries()].flatMap(([uid, n]) => Array.from({ length: n }, () => uid)),
+    eligibleOwners.flatMap((uid) => Array.from({ length: perOwner }, () => uid)),
     rng
   );
 
@@ -146,19 +153,42 @@ export function generateRounds({ pools, roundCount } = {}, rng = Math.random) {
   const actual = rounds.length;
   const clamped = actual < requested;
 
+  // The round count is now allowed to move in BOTH directions, so the message says which
+  // way and why. Callers should show it whenever it is non-null, not only when clamped.
+  let message = null;
+  if (requested > 0 && actual !== requested) {
+    if (ownerCount === 0) {
+      message = `Only ${pluralise(actual, 'round')} available — ${pluralise(
+        ownerCount,
+        'player'
+      )} had usable videos`;
+    } else if (actual > requested) {
+      message =
+        `Playing ${pluralise(actual, 'round')} instead of ${requested} — one each for ` +
+        `${pluralise(ownerCount, 'player')}, so everyone's videos come up the same number of times`;
+    } else if (smallestPool < Math.floor(requested / ownerCount)) {
+      message =
+        `Only ${pluralise(actual, 'round')} available — ${pluralise(perOwner, 'round')} each for ` +
+        `${pluralise(ownerCount, 'player')}, capped by the smallest pool (${pluralise(
+          smallestPool,
+          'video'
+        )})`;
+    } else {
+      message =
+        `Rounded down to ${pluralise(actual, 'round')} — ${pluralise(perOwner, 'round')} each for ` +
+        `${pluralise(ownerCount, 'player')}, so everyone's videos come up the same number of times`;
+    }
+  }
+
   return {
     rounds,
     requested,
     available: actual,
+    perOwner,
     clamped,
     eligibleOwners,
     droppedAmbiguous,
-    message: clamped
-      ? `Only ${pluralise(actual, 'round')} available — ${pluralise(
-          eligibleOwners.length,
-          'player'
-        )} had usable videos`
-      : null,
+    message,
   };
 }
 

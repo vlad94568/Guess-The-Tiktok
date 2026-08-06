@@ -64,7 +64,9 @@ test('a videoId in two pools is excluded entirely and reported', () => {
     res.rounds.every((r) => r.videoId !== 'shared1'),
     'shared1 must never appear in a round'
   );
-  assert.equal(res.rounds.length, 4); // a1 a2 b1 c1
+  // Usable: alice a1+a2, bob b1, cara c1. Equal shares means 1 each, not 2+1+1.
+  assert.equal(res.rounds.length, 3);
+  assert.deepEqual([...ownerCounts(res.rounds).values()], [1, 1, 1]);
 });
 
 test('a video shared by three pools is dropped, and a player left with nothing is not an eligible owner', () => {
@@ -135,6 +137,67 @@ test('a videoId is always owned by the player whose pool it came from', () => {
 // 3. owner balance
 // ===========================================================================
 
+test('every eligible owner owns exactly the same number of rounds', () => {
+  const shapes = [
+    { pools: { a: pool('a', 20), b: pool('b', 20), c: pool('c', 20) }, roundCount: 10 },
+    { pools: { a: pool('a', 20), b: pool('b', 7), c: pool('c', 50) }, roundCount: 30 },
+    { pools: { a: pool('a', 3), b: pool('b', 99) }, roundCount: 50 },
+    { pools: { a: pool('a', 6), b: pool('b', 6), c: pool('c', 6), d: pool('d', 6) }, roundCount: 7 },
+    { pools: { a: pool('a', 9) }, roundCount: 4 },
+  ];
+
+  for (const shape of shapes) {
+    for (let seed = 1; seed <= 15; seed++) {
+      const res = generateRounds(shape, seeded(seed));
+      const counts = [...ownerCounts(res.rounds).values()];
+      assert.equal(counts.length, res.eligibleOwners.length, 'every eligible owner must appear');
+      assert.equal(
+        new Set(counts).size,
+        1,
+        `seed ${seed}: uneven owner counts ${counts.join(',')} for ${JSON.stringify(shape.pools && Object.keys(shape.pools))}`
+      );
+      assert.equal(counts[0], res.perOwner);
+      assert.equal(res.rounds.length, res.perOwner * res.eligibleOwners.length);
+    }
+  }
+});
+
+test('more players than requested rounds still gives everyone exactly one round', () => {
+  // floor(3 / 5) is 0, which would mean no game at all. Overshoot instead of going
+  // unequal or empty.
+  const pools = Object.fromEntries(['a', 'b', 'c', 'd', 'e'].map((u) => [u, pool(u, 4)]));
+  const res = generateRounds({ pools, roundCount: 3 }, seeded(5));
+
+  assert.equal(res.perOwner, 1);
+  assert.equal(res.rounds.length, 5);
+  assert.equal(res.requested, 3);
+  assert.equal(res.clamped, false, 'longer than requested is not clamping');
+  assert.equal(
+    res.message,
+    "Playing 5 rounds instead of 3 — one each for 5 players, so everyone's videos come up the same number of times"
+  );
+});
+
+test('the smallest pool caps everybody, so nobody owns more rounds than anyone else', () => {
+  // bob has 1 usable video. Alice and cara have 10 each, but taking more would hand them
+  // extra rounds bob cannot match — and the owner of a round cannot score in it.
+  const res = generateRounds(
+    { pools: { alice: pool('a', 10), bob: ['b1'], cara: pool('c', 10) }, roundCount: 9 },
+    seeded(11)
+  );
+
+  const counts = ownerCounts(res.rounds);
+  assert.equal(res.perOwner, 1);
+  assert.equal(res.rounds.length, 3);
+  assert.equal(counts.get('alice'), 1);
+  assert.equal(counts.get('bob'), 1);
+  assert.equal(counts.get('cara'), 1);
+  assert.equal(
+    res.message,
+    'Only 3 rounds available — 1 round each for 3 players, capped by the smallest pool (1 video)'
+  );
+});
+
 test('with equal pools, owner counts differ by at most 1', () => {
   for (let seed = 1; seed <= 25; seed++) {
     const res = generateRounds(
@@ -159,18 +222,17 @@ test('with equal pools, owner counts differ by at most 1', () => {
   }
 });
 
-test('a player with a small pool does not block the others, and balance is as even as capacity allows', () => {
-  // bob only has 1 usable video, so he owns 1 round and the rest split the remainder.
-  const res = generateRounds(
-    { pools: { alice: pool('a', 10), bob: ['b1'], cara: pool('c', 10) }, roundCount: 9 },
-    seeded(11)
-  );
-
-  const counts = ownerCounts(res.rounds);
-  assert.equal(res.rounds.length, 9);
-  assert.equal(counts.get('bob'), 1);
-  assert.equal(counts.get('alice'), 4);
-  assert.equal(counts.get('cara'), 4);
+test('the round total is always a multiple of the number of eligible owners', () => {
+  for (let owners = 1; owners <= 6; owners++) {
+    for (const roundCount of [1, 5, 10, 17, 50]) {
+      const pools = Object.fromEntries(
+        Array.from({ length: owners }, (_, i) => [`p${i}`, pool(`p${i}v`, 60)])
+      );
+      const res = generateRounds({ pools, roundCount }, seeded(owners * 100 + roundCount));
+      assert.equal(res.rounds.length % owners, 0, `${owners} owners, ${roundCount} requested`);
+      assert.ok(res.rounds.length > 0, 'a playable game must never end up with zero rounds');
+    }
+  }
 });
 
 // ===========================================================================
@@ -241,7 +303,7 @@ test('a single eligible owner still produces rounds (repeats unavoidable)', () =
 // 5. clamping + message
 // ===========================================================================
 
-test('requesting 10 rounds when only 6 unique videos exist yields 6 and the spec message', () => {
+test('requesting 10 rounds when the smallest pool holds 1 video yields 1 round each', () => {
   const res = generateRounds(
     {
       pools: {
@@ -255,11 +317,15 @@ test('requesting 10 rounds when only 6 unique videos exist yields 6 and the spec
     seeded(4)
   );
 
+  // 4 owners, and cara/dan have 1 video each, so everybody owns 1 round.
   assert.equal(res.requested, 10);
-  assert.equal(res.available, 6);
-  assert.equal(res.rounds.length, 6);
+  assert.equal(res.available, 4);
+  assert.equal(res.rounds.length, 4);
   assert.equal(res.clamped, true);
-  assert.equal(res.message, 'Only 6 rounds available — 4 players had usable videos');
+  assert.equal(
+    res.message,
+    'Only 4 rounds available — 1 round each for 4 players, capped by the smallest pool (1 video)'
+  );
   assert.ok(res.message.includes('—'), 'must use an em dash');
 });
 
@@ -285,7 +351,10 @@ test('exactly enough videos is not clamped', () => {
 
 test('message pluralises correctly for a single round and a single player', () => {
   const res = generateRounds({ pools: { alice: ['a1'] }, roundCount: 5 }, seeded(6));
-  assert.equal(res.message, 'Only 1 round available — 1 player had usable videos');
+  assert.equal(
+    res.message,
+    'Only 1 round available — 1 round each for 1 player, capped by the smallest pool (1 video)'
+  );
 });
 
 test('no usable videos at all reports zero rounds', () => {
