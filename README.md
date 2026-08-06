@@ -94,8 +94,24 @@ Double-click **`START HERE - Host a game.cmd`**.
 It installs dependencies on first run, starts the server, waits for it, and opens the host
 screen. Node.js is the only prerequisite; the script says so plainly if it is missing.
 
+Run **`Create desktop shortcut.cmd`** once and you get a "Guess The TikTok" icon on your
+Desktop, so you never have to find this folder again.
+
 When you are finished, double-click **`STOP - End game.cmd`**. This matters — see
 "Resource use" below.
+
+### How players join
+
+The host screen shows a **QR code** plus the room code. Everyone points a camera at the QR
+and lands straight on the join page — nobody types a URL.
+
+The QR always advertises the **public** address, never `localhost`, because a phone that
+opens `localhost` is talking to itself. If you fork this repo, change `PUBLIC_PLAY_URL` at
+the top of [`docs/js/host.js`](docs/js/host.js) to your own Pages address.
+
+The encoder in [`docs/js/qr.js`](docs/js/qr.js) is self-contained — no CDN, works offline —
+and is verified in `test/qr.test.mjs` by decoding its own output with an independent
+decoder, because a subtly wrong QR still renders as a plausible-looking square.
 
 <details>
 <summary>Running it manually (any OS)</summary>
@@ -283,10 +299,18 @@ and rejects `newData.val() === auth.uid` — no voting for yourself.
 ## Tests
 
 ```bash
-node --test "test/game.test.mjs"     # 42 pure-logic tests, no deps, no emulator
-node --test "test/rules.test.mjs"    # 22 security-rules tests, needs the emulator
-node test/e2e.mjs                    # full game in 3 browser contexts, needs everything
+node --test "test/game.test.mjs"     # pure logic, no deps, no emulator
+node --test "test/qr.test.mjs"       # QR encoder, round-tripped through a real decoder
+node --test "test/rules.test.mjs"    # security rules, needs the emulator
+node --test "test/rules.prod.mjs"    # same attacks against the LIVE project
+node test/e2e.mjs [--prod] [--split] # full game in 3 browser contexts
+node test/uishots.mjs [--prod]       # screenshots every screen to test/out/ui/
 ```
+
+`--split` puts the players on the **live GitHub Pages deployment** while the host stays
+local. That is the real party topology, but it means a failure there can simply mean the
+deployment is older than your working tree — check `--prod` (everything local) before
+hunting for a bug.
 
 Note `node --test test/` (a bare directory) does **not** work on Node 24 — it treats the
 argument as a file, not a directory to recurse. Use `node --test` with no argument for

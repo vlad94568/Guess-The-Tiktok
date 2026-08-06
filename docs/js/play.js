@@ -79,6 +79,7 @@ function attachRoom(code) {
       S.phase = null;
       S.myVote = null;
       S.ownerUid = null;
+      detachOwner();
       S.sittingOut = false;
       return render();
     }
@@ -87,6 +88,7 @@ function attachRoom(code) {
       S.phase = null;
       S.myVote = null;
       S.ownerUid = null;
+      detachOwner();
       S.sittingOut = false;
       watchRound(i);
     }
@@ -94,11 +96,31 @@ function attachRoom(code) {
   });
 }
 
+/** Separate from S.unsubRound: attached later than the rest, see below. */
+let unsubOwner = null;
+
+function detachOwner() {
+  if (unsubOwner) unsubOwner();
+  unsubOwner = null;
+}
+
 function watchRound(i) {
   for (const u of S.unsubRound) u();
+  detachOwner();
   S.unsubRound = [
     db.watchRoundPhase(S.code, i, (p) => {
       S.phase = p;
+      // ownerUid is the answer, and the rules refuse to serve it until phase ===
+      // 'reveal'. Firebase rejects such a listener ONCE and never retries it, so
+      // attaching it at round start (while the phase is still 'playing') leaves a dead
+      // subscription and the player never learns who it was — the reveal screen just
+      // shows "…". It must be attached AFTER the phase flips.
+      if (p === 'reveal' && !unsubOwner) {
+        unsubOwner = db.watchRoundOwner(S.code, i, (o) => {
+          S.ownerUid = o;
+          render();
+        });
+      }
       render();
     }),
     db.watchRoundEndsAt(S.code, i, (e) => {
@@ -112,11 +134,6 @@ function watchRound(i) {
     }),
     db.watchMyVote(S.code, i, S.uid, (v) => {
       S.myVote = v;
-      render();
-    }),
-    // Denied by the rules until phase === 'reveal'; the error is expected and ignored.
-    db.watchRoundOwner(S.code, i, (o) => {
-      S.ownerUid = o;
       render();
     }),
   ];
@@ -149,14 +166,29 @@ function render() {
   if (st === 'loading') {
     show('lobby');
     $('lobby-name').textContent = me?.name ?? '';
+    $('lobby-handle').textContent = '@' + (me?.handle ?? '');
+    $('lobby-note').textContent = 'Fetching everyone’s videos — this takes a few seconds each.';
     return;
   }
   if (st === 'finished') {
     show('finished');
     const board = leaderboard(S.players);
     const mine = board.find((r) => r.uid === S.uid);
-    $('final-placing').textContent = mine ? `You came ${ordinal(mine.rank)} of ${board.length}.` : '—';
+    $('final-placing').textContent = mine
+      ? mine.rank === 1
+        ? board.filter((r) => r.rank === 1).length > 1
+          ? 'Joint winner 🏆'
+          : 'You won 🏆'
+        : `${ordinal(mine.rank)} of ${board.length}`
+      : '—';
     $('final-score').textContent = mine?.score ?? 0;
+    $('final-board').innerHTML = board
+      .map(
+        (r) =>
+          `<li class="${r.uid === S.uid ? 'me' : ''}"><span class="rank">${r.rank}</span>` +
+          `<span class="who">${esc(r.name)}</span><span class="score-pill">${r.score}</span></li>`
+      )
+      .join('');
     return;
   }
 
@@ -176,6 +208,9 @@ function renderPlaying(me) {
   $('sit-out').classList.toggle('hidden', !S.sittingOut);
   $('vote-area').classList.toggle('hidden', S.sittingOut);
   if (S.sittingOut) return;
+  $('vote-hint').textContent = S.myVote
+    ? 'Locked in. Watch the big screen.'
+    : "Tap a name. You can't change it.";
 
   const others = Object.entries(S.players).filter(([uid]) => uid !== S.uid);
   const box = $('vote-buttons');
@@ -199,21 +234,24 @@ function renderPlaying(me) {
 
 function renderReveal(me) {
   $('reveal-score').textContent = me?.score ?? 0;
-  if (S.sittingOut) {
-    $('reveal-msg').textContent = 'That was yours.';
-    return;
-  }
-  if (!S.myVote) {
-    $('reveal-msg').textContent = "You didn't vote in time.";
-    return;
-  }
-  // ownerUid becomes readable exactly when the host flips the phase to reveal.
+  $('reveal-round-num').textContent = (S.round ?? 0) + 1;
+
+  const box = $('verdict');
+  const set = (cls, big, sub) => {
+    box.className = `verdict ${cls}`;
+    $('reveal-msg').textContent = big;
+    $('reveal-sub').textContent = sub;
+  };
+
+  // ownerUid only becomes readable when the host flips the phase to reveal, so this
+  // can render once before the value has arrived.
   const ownerName = S.players[S.ownerUid]?.name;
-  if (!ownerName) {
-    $('reveal-msg').textContent = '…';
-    return;
-  }
-  $('reveal-msg').textContent = S.myVote === S.ownerUid ? 'Correct! +1' : `Nope — it was ${ownerName}`;
+
+  if (S.sittingOut) return set('neutral', 'That one was yours', 'No points either way.');
+  if (!ownerName) return set('neutral', 'Revealing…', '');
+  if (!S.myVote) return set('wrong', "Too slow", `It was ${ownerName}.`);
+  if (S.myVote === S.ownerUid) return set('correct', 'Correct! +1', `It was ${ownerName}.`);
+  set('wrong', 'Nope', `It was ${ownerName}, not ${S.players[S.myVote]?.name ?? '???'}.`);
 }
 
 const ordinal = (n) => {
@@ -225,7 +263,10 @@ const ordinal = (n) => {
 // countdown, derived from the authoritative endsAt (never a local tick count)
 setInterval(() => {
   if (S.meta?.status !== 'playing' || S.phase !== 'playing') return;
-  $('countdown').textContent = Math.max(0, Math.ceil((S.endsAt - (Date.now() + S.offset)) / 1000));
+  const left = Math.max(0, Math.ceil((S.endsAt - (Date.now() + S.offset)) / 1000));
+  const el = $('countdown');
+  el.textContent = left;
+  el.classList.toggle('urgent', left <= 5);
 }, 250);
 
 // ===========================================================================

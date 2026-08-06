@@ -3,72 +3,134 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Whose TikTok? — Host</title>
+    <title>Guess The TikTok — Host</title>
     <link rel="stylesheet" href="css/style.css" />
   </head>
   <body>
     <div class="host-wrap">
-      <div id="fatal" class="err hidden"></div>
+      <div id="fatal" class="notice notice-bad hidden"></div>
 
       <!-- ================= LOBBY ================= -->
       <section id="view-lobby" class="hidden">
-        <h1>Whose TikTok?</h1>
-        <p class="host-big">Join at <strong id="join-url">…</strong> — room code:</p>
-        <div class="host-code" id="room-code">····</div>
+        <div class="host-join">
+          <div class="host-join-text">
+            <div class="muted host-big">Join on your phone at</div>
+            <div class="host-url" id="join-url">…</div>
+            <div class="muted host-big" style="margin-top: 14px">Room code</div>
+            <div class="host-code" id="room-code">····</div>
+          </div>
+          <div>
+            <div class="qr-box"><canvas id="join-qr"></canvas></div>
+            <div class="qr-caption">Point a camera here</div>
+          </div>
+        </div>
 
-        <fieldset>
-          <legend>Mode</legend>
-          <label><input type="radio" name="mode" value="reposts" checked /> Reposts <span class="muted">(works for everyone)</span></label>
-          <label><input type="radio" name="mode" value="likes" /> Likes <span class="muted">(needs public Liked videos)</span></label>
-          <label><input type="radio" name="mode" value="both" /> Both</label>
-        </fieldset>
+        <div class="row" style="align-items: flex-start; margin-top: 18px">
+          <div style="flex: 1 1 320px">
+            <fieldset>
+              <legend>Which videos?</legend>
+              <label class="choice">
+                <input type="radio" name="mode" value="reposts" checked />
+                <span class="choice-text">
+                  <strong>Reposts</strong>
+                  <span class="choice-note">Works for everyone. Recommended.</span>
+                </span>
+              </label>
+              <label class="choice">
+                <input type="radio" name="mode" value="likes" />
+                <span class="choice-text">
+                  <strong>Likes</strong>
+                  <span class="choice-note">Only works if a player made their Liked videos public.</span>
+                </span>
+              </label>
+              <label class="choice">
+                <input type="radio" name="mode" value="both" />
+                <span class="choice-text">
+                  <strong>Both</strong>
+                  <span class="choice-note">Reposts plus likes, where available.</span>
+                </span>
+              </label>
+            </fieldset>
+          </div>
 
-        <div class="row">
-          <div style="flex:1">
+          <div style="flex: 1 1 260px">
             <label for="round-count">Rounds</label>
             <input id="round-count" type="number" value="10" min="1" max="50" />
-          </div>
-          <div style="flex:1">
             <label for="timer-secs">Seconds per round</label>
             <input id="timer-secs" type="number" value="20" min="5" max="120" />
           </div>
         </div>
 
-        <h2>Players (<span id="player-count">0</span>)</h2>
+        <h2>Players joined — <span id="player-count">0</span></h2>
         <ul class="host-list" id="lobby-players"></ul>
 
-        <p id="scraper-health" class="host-big">Scraper: <span class="muted">checking…</span></p>
-        <button id="btn-start" disabled>Start Game</button>
-        <p class="muted" id="start-hint"></p>
+        <p id="scraper-health" class="host-big" style="margin-top: 18px">
+          <span class="muted">Checking the local helper…</span>
+        </p>
+
+        <button id="btn-start" class="btn-primary host-big" disabled>Start game</button>
+        <p class="muted center" id="start-hint" style="margin-top: 8px"></p>
+
+        <details class="help">
+          <summary>Nobody can join / something isn't working</summary>
+          <div class="help-body">
+            <ul>
+              <li><strong>Phones can't open the page?</strong> They must use the address above, not
+                <code>localhost</code>. Only this computer can use localhost.</li>
+              <li><strong>"No room with that code"?</strong> Codes are 4 letters, no numbers. Check the
+                big red code — <code>0</code> and <code>1</code> never appear, so it's <code>O</code> and <code>I</code>.</li>
+              <li><strong>Helper shows red?</strong> Close this window and double-click
+                <code>START HERE - Host a game.cmd</code> again.</li>
+              <li><strong>A player shows an error after Start?</strong> That's their TikTok account —
+                the reason is listed next to their name. The game continues without their videos;
+                they can still vote.</li>
+              <li><strong>Sign-in errors on phones?</strong> The site's domain must be listed in
+                Firebase → Authentication → Settings → Authorized domains.</li>
+            </ul>
+          </div>
+        </details>
       </section>
 
       <!-- ================= LOADING ================= -->
       <section id="view-loading" class="hidden">
-        <h1>Building pools…</h1>
+        <h1>Fetching everyone's videos…</h1>
+        <p class="muted host-big">One account at a time, so TikTok doesn't rate-limit us. Takes a few seconds each.</p>
         <ul class="host-list" id="loading-players"></ul>
+        <div id="loading-note"></div>
       </section>
 
       <!-- ================= PLAYING ================= -->
       <section id="view-playing" class="hidden">
         <div class="host-header">
-          <span>Round <span id="round-num">1</span>/<span id="round-total">10</span></span>
+          <span>Round <span id="round-num">1</span> of <span id="round-total">10</span></span>
           <span class="countdown" id="countdown">20</span>
           <span>Voted <span id="voted-count">0</span>/<span id="voted-total">0</span></span>
         </div>
         <div class="embed-slot" id="embed-slot"></div>
-        <p><a id="watch-link" class="watch-link" href="#" target="_blank" rel="noopener noreferrer">Open this TikTok in a new tab &#8599;</a></p>
-        <p class="host-big muted" id="voted-names"></p>
+        <p>
+          <a id="watch-link" class="watch-link" href="#" target="_blank" rel="noopener noreferrer"
+            >Open this TikTok in a new tab &#8599;</a
+          >
+        </p>
+        <p class="host-big muted center" id="voted-names"></p>
       </section>
 
       <!-- ================= REVEAL ================= -->
       <section id="view-reveal" class="hidden">
-        <div class="host-header"><span>Round <span id="reveal-round-num">1</span>/<span id="reveal-round-total">10</span></span></div>
-        <p class="host-huge">It was <span id="reveal-owner">…</span></p>
-        <p><a id="reveal-watch-link" class="watch-link" href="#" target="_blank" rel="noopener noreferrer">Open this TikTok in a new tab &#8599;</a></p>
+        <div class="host-header">
+          <span>Round <span id="reveal-round-num">1</span> of <span id="reveal-round-total">10</span></span>
+        </div>
+        <p class="host-huge">It was <span id="reveal-owner" style="color: var(--accent)">…</span></p>
+        <p>
+          <a id="reveal-watch-link" class="watch-link" href="#" target="_blank" rel="noopener noreferrer"
+            >Open this TikTok in a new tab &#8599;</a
+          >
+        </p>
+        <h2>Guesses</h2>
         <ul class="host-list" id="reveal-votes"></ul>
         <h2>Leaderboard</h2>
         <ul class="host-list" id="reveal-board"></ul>
-        <button id="btn-next">Next Round</button>
+        <button id="btn-next" class="btn-primary host-big">Next round</button>
       </section>
 
       <!-- ================= FINISHED ================= -->
@@ -76,7 +138,11 @@
         <h1>Final scores</h1>
         <p class="host-huge" id="winner">…</p>
         <ul class="host-list" id="final-board"></ul>
-        <button id="btn-newgame">New Game</button>
+        <button id="btn-newgame" class="btn-primary host-big">Play again</button>
+        <p class="muted center small" style="margin-top: 10px">
+          Keeps everyone in the room. When you're completely done, double-click
+          <code>STOP - End game.cmd</code> to free up memory.
+        </p>
       </section>
     </div>
 

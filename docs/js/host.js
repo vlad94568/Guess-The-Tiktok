@@ -8,8 +8,24 @@ import { authReady } from './firebase.js';
 import * as db from './db.js';
 import { generateRounds, scoreRound, voteProgress, leaderboard } from './game.js';
 import { mountEmbed, unmountEmbed, currentEmbed, watchUrl } from './embed.js';
+import { renderQR } from './qr.js';
 
 const SCRAPER = 'http://localhost:8787';
+
+/**
+ * Where players actually join.
+ *
+ * When the host runs locally the browser URL is http://localhost:8787/host.html, which
+ * is useless to a phone — localhost on a phone is the phone. So when this page is served
+ * from loopback we advertise the public deployment instead. If the host page is itself
+ * on a public origin, same-origin play.html is correct and is used.
+ *
+ * Change this if you fork the repo to your own GitHub Pages address.
+ */
+const PUBLIC_PLAY_URL = 'https://vlad94568.github.io/Guess-The-Tiktok/play.html';
+const isLoopback = /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname);
+const playerJoinUrl = () =>
+  isLoopback ? PUBLIC_PLAY_URL : location.href.replace(/host\.html.*$/, 'play.html');
 const $ = (id) => document.getElementById(id);
 const views = ['lobby', 'loading', 'playing', 'reveal', 'finished'];
 
@@ -46,16 +62,17 @@ function fatal(msg) {
 
 /** Human sentences for the structured codes the scraper returns. */
 const ERROR_TEXT = {
-  likes_private: 'their Liked videos are private',
-  no_videos: 'no usable videos found',
-  profile_not_found: 'profile not found or private',
-  reposts_unsupported: 'reposts could not be read',
-  blocked: 'TikTok blocked the request',
-  timeout: 'timed out',
-  scrape_failed: 'scrape failed',
-  unreachable: 'scraper not reachable',
+  likes_private: ['Liked videos are private', 'They can switch mode to Reposts, or make Liked videos public in TikTok settings.'],
+  no_videos: ['No usable videos', 'This account has no reposts. They can still vote.'],
+  profile_not_found: ['Account not found or private', 'Check the spelling of their @handle.'],
+  reposts_unsupported: ['Reposts could not be read', 'TikTok may have changed. Try Likes mode.'],
+  blocked: ['TikTok blocked the request', 'Wait a minute and try again — too many requests too fast.'],
+  timeout: ['Timed out', 'Check the internet connection and try again.'],
+  scrape_failed: ['Lookup failed', 'Try starting the game again.'],
+  unreachable: ['Helper not reachable', 'Re-run START HERE - Host a game.cmd.'],
 };
-const errorText = (code) => ERROR_TEXT[code] || `error: ${code}`;
+const errorText = (code) => (ERROR_TEXT[code] || [`Error: ${code}`, ''])[0];
+const errorHint = (code) => (ERROR_TEXT[code] || ['', ''])[1];
 
 async function scraperHealth() {
   try {
@@ -88,9 +105,12 @@ async function pollHealth() {
   healthOk = !!h.ok;
   const el = $('scraper-health');
   el.innerHTML = healthOk
-    ? `Scraper: <span class="ok">connected (${h.browser === 'ready' ? 'browser warm' : 'browser cold'})</span>`
-    : `Scraper: <span class="bad">unreachable — is it running?</span> ` +
-      `<span class="muted">Note: hosting requires Chrome or Edge, not Safari.</span>`;
+    ? `<span class="ok">✓ Ready</span> <span class="muted">${
+        h.browser === 'ready' ? '' : '— warming up, you can still start'
+      }</span>`
+    : `<span class="bad">✕ Local helper not running.</span> ` +
+      `<span class="muted">Close this tab and double-click “START HERE - Host a game.cmd”. ` +
+      `If you opened this page in Safari, use Chrome or Edge instead.</span>`;
   refreshStartButton();
 }
 
@@ -130,8 +150,9 @@ function renderLobby() {
   const entries = Object.entries(S.players);
   $('player-count').textContent = entries.length;
   $('lobby-players').innerHTML =
-    entries.map(([, p]) => `<li>${esc(p.name)} <span class="muted">@${esc(p.handle)}</span></li>`).join('') ||
-    '<li class="muted">Nobody yet…</li>';
+    entries
+      .map(([, p]) => `<li><span>${esc(p.name)}</span><span class="muted">@${esc(p.handle)}</span></li>`)
+      .join('') || '<li class="muted">Waiting for people to join…</li>';
   refreshStartButton();
 }
 
@@ -142,10 +163,10 @@ function refreshStartButton() {
   if (!btn) return;
   btn.disabled = !ready;
   $('start-hint').textContent = !healthOk
-    ? 'Start the scraper: cd scraper && npm start'
+    ? 'Waiting for the local helper.'
     : n < 2
-    ? 'Need at least 2 players.'
-    : '';
+    ? `Need at least 2 players — ${n} so far.`
+    : `Ready with ${n} players.`;
 }
 
 const esc = (s) =>
@@ -185,7 +206,9 @@ async function buildPools() {
     await db.setStatus(S.code, 'lobby');
     return;
   }
-  if (plan.clamped) $('loading-players').insertAdjacentHTML('beforeend', `<li class="bad">${esc(plan.message)}</li>`);
+  if (plan.clamped)
+    $('loading-note').innerHTML =
+      `<div class="notice notice-warn host-big">${esc(plan.message)}</div>`;
 
   await db.writePlan(S.code, plan.rounds);
   await db.setCurrentRound(S.code, 0);
@@ -197,9 +220,15 @@ function renderLoading() {
   $('loading-players').innerHTML = Object.entries(S.players)
     .map(([, p]) => {
       const s = p.poolStatus || 'pending';
-      if (s === 'ok') return `<li>${esc(p.name)} <span class="ok">${p.poolCount} videos</span></li>`;
-      if (s === 'error') return `<li>${esc(p.name)} <span class="bad">${esc(errorText(p.poolError))}</span></li>`;
-      return `<li>${esc(p.name)} <span class="muted">scraping…</span></li>`;
+      const who = `<span>${esc(p.name)} <span class="muted">@${esc(p.handle)}</span></span>`;
+      if (s === 'ok') return `<li>${who}<span class="ok">✓ ${p.poolCount} videos</span></li>`;
+      if (s === 'error')
+        return (
+          `<li><span>${esc(p.name)} <span class="muted">@${esc(p.handle)}</span>` +
+          `<br><span class="muted small">${esc(errorHint(p.poolError))}</span></span>` +
+          `<span class="bad">${esc(errorText(p.poolError))}</span></li>`
+        );
+      return `<li>${who}<span class="muted">looking…</span></li>`;
     })
     .join('');
 }
@@ -334,18 +363,24 @@ function renderReveal() {
     Object.entries(S.votes)
       .map(([voter, guess]) => {
         const ok = guess === ownerUid;
-        return `<li>${esc(S.players[voter]?.name)} guessed ${esc(S.players[guess]?.name)} ${
-          ok ? '<span class="ok">✓</span>' : '<span class="bad">✗</span>'
-        }</li>`;
+        return (
+          `<li><span>${esc(S.players[voter]?.name)} said <strong>${esc(S.players[guess]?.name)}</strong></span>` +
+          (ok ? '<span class="ok">✓ +1</span>' : '<span class="bad">✗</span>') +
+          `</li>`
+        );
       })
-      .join('') || '<li class="muted">Nobody voted.</li>';
+      .join('') || '<li class="muted">Nobody voted in time.</li>';
 
   $('reveal-board').innerHTML = boardHtml();
 }
 
 const boardHtml = () =>
   leaderboard(S.players)
-    .map((r) => `<li>${r.rank}. ${esc(r.name)} — ${r.score}</li>`)
+    .map(
+      (r) =>
+        `<li><span><span class="rank">${r.rank}</span>${esc(r.name)}</span>` +
+        `<span class="score-pill">${r.score}</span></li>`
+    )
     .join('');
 
 function renderFinished() {
@@ -363,7 +398,9 @@ function renderFinished() {
 setInterval(() => {
   if (S.meta?.status !== 'playing' || S.phase !== 'playing') return;
   const left = Math.max(0, Math.ceil((S.endsAt - (Date.now() + S.offset)) / 1000));
-  $('countdown').textContent = left;
+  const el = $('countdown');
+  el.textContent = left;
+  el.classList.toggle('urgent', left <= 5);
   if (left === 0) lockAndReveal();
 }, 250);
 
@@ -381,8 +418,16 @@ setInterval(() => {
 
   S.code = await createRoom();
   $('room-code').textContent = S.code;
-  const base = location.href.replace(/host\.html.*$/, 'play.html');
-  $('join-url').textContent = base.replace(/^https?:\/\//, '');
+
+  const joinUrl = playerJoinUrl();
+  $('join-url').textContent = joinUrl.replace(/^https?:\/\//, '');
+  try {
+    renderQR($('join-qr'), joinUrl, 300);
+  } catch (e) {
+    // A missing QR is cosmetic; the URL and code above it still work.
+    console.warn('QR render failed:', e.message);
+    $('join-qr').closest('.qr-box')?.classList.add('hidden');
+  }
 
   db.watchMeta(S.code, (m) => {
     if (!m) return;

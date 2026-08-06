@@ -2,19 +2,38 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Whose TikTok?</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0e0e11" />
+    <title>Guess The TikTok</title>
     <link rel="stylesheet" href="css/style.css" />
   </head>
   <body>
-    <main class="center">
-      <h1>Whose TikTok?</h1>
-      <p class="muted">One screen, everyone's phones.</p>
-      <div class="stack">
-        <a class="btn" href="host.html">Host a game</a>
-        <a class="btn" href="play.html">Join a game</a>
+    <main class="play-wrap">
+      <h1>Guess The TikTok</h1>
+      <p class="muted">
+        One screen everyone watches, everyone else plays on their phone. A TikTok from someone's
+        reposts plays — guess whose.
+      </p>
+
+      <div class="stack" style="margin-top: 26px">
+        <a class="btn btn-primary" href="play.html">I'm playing — join a game</a>
+        <a class="btn" href="host.html">I'm hosting</a>
       </div>
+
+      <details class="help">
+        <summary>Which one am I?</summary>
+        <div class="help-body">
+          <ul>
+            <li><strong>Playing:</strong> you're on your phone. You need the 4-letter room code from
+              the big screen.</li>
+            <li><strong>Hosting:</strong> you're the one sharing a screen. Hosting needs the helper
+              running on a Windows PC — double-click
+              <code>START HERE - Host a game.cmd</code> instead of opening this page.</li>
+          </ul>
+        </div>
+      </details>
     </main>
+
     <script type="module">
       // Carry ?emu=1 across navigation so emulator sessions stay on the emulator.
       if (new URLSearchParams(location.search).get('emu') === '1') {

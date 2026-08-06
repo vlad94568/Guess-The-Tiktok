@@ -2,62 +2,129 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Whose TikTok? — Play</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0e0e11" />
+    <title>Guess The TikTok</title>
     <link rel="stylesheet" href="css/style.css" />
   </head>
   <body>
     <div class="play-wrap">
-      <div id="fatal" class="err hidden"></div>
+      <div id="fatal" class="notice notice-bad hidden"></div>
 
       <!-- ================= JOIN ================= -->
       <section id="view-join" class="hidden">
-        <h1>Whose TikTok?</h1>
-        <label for="f-name">Your name</label>
-        <input id="f-name" maxlength="20" autocomplete="off" />
+        <h1>Guess The TikTok</h1>
+        <p class="muted">Watch the big screen. Guess whose video is playing.</p>
+
         <label for="f-code">Room code</label>
-        <input id="f-code" maxlength="4" autocapitalize="characters" autocomplete="off" />
+        <input
+          id="f-code"
+          class="code-input"
+          maxlength="4"
+          autocapitalize="characters"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          placeholder="ABCD"
+        />
+
+        <label for="f-name">Your name</label>
+        <input id="f-name" maxlength="20" autocomplete="off" placeholder="What people call you" />
+
         <label for="f-handle">Your TikTok @handle</label>
-        <input id="f-handle" maxlength="30" autocapitalize="none" autocomplete="off" placeholder="vladtok" />
-        <div id="join-error" class="err hidden"></div>
-        <button id="btn-join" style="margin-top:16px">Join</button>
+        <input
+          id="f-handle"
+          maxlength="30"
+          autocapitalize="none"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          placeholder="username"
+        />
+        <p class="muted small">Without the @. Your reposts become the questions.</p>
+
+        <div id="join-error" class="notice notice-bad hidden"></div>
+        <button id="btn-join" class="btn-primary" style="margin-top: 18px">Join game</button>
+
+        <details class="help">
+          <summary>Trouble joining?</summary>
+          <div class="help-body">
+            <ul>
+              <li><strong>Code not working?</strong> It's 4 letters, never numbers. There's no
+                <code>0</code> or <code>1</code> — those are <code>O</code> and <code>I</code>.</li>
+              <li><strong>"Game already started"?</strong> Ask the host to finish and hit
+                <em>Play again</em>, which reopens the lobby.</li>
+              <li><strong>Your handle:</strong> open TikTok → Profile. The name under your photo,
+                without the <code>@</code>.</li>
+              <li><strong>Private account?</strong> Nothing can be read from it. You'll still play and
+                vote, you just won't be one of the answers.</li>
+            </ul>
+          </div>
+        </details>
       </section>
 
       <!-- ================= LOBBY ================= -->
       <section id="view-lobby" class="hidden">
-        <h1>You're in.</h1>
+        <h1>You're in</h1>
         <p class="play-status">Watch the big screen.</p>
-        <p class="muted">Playing as <strong id="lobby-name"></strong> (<span id="lobby-handle"></span>)</p>
-        <button id="btn-leave" class="muted">Leave</button>
+        <div class="panel">
+          <div><strong id="lobby-name"></strong></div>
+          <div class="muted" id="lobby-handle"></div>
+        </div>
+        <p class="muted small" style="margin-top: 14px" id="lobby-note">Waiting for the host to start.</p>
+        <div style="margin-top: auto">
+          <button id="btn-leave" class="btn-quiet">Leave and rejoin as someone else</button>
+        </div>
       </section>
 
       <!-- ================= PLAYING ================= -->
       <section id="view-playing" class="hidden">
-        <p class="play-status">
-          Round <span id="round-num">1</span> — <span id="countdown">20</span>s
-        </p>
+        <div class="play-top">
+          <span class="play-round">Round <span id="round-num">1</span></span>
+          <span class="play-timer" id="countdown">20</span>
+        </div>
+
         <div id="sit-out" class="hidden">
-          <p class="play-status">This one's yours, sit tight.</p>
+          <div class="verdict neutral">
+            <div class="verdict-big">This one's yours</div>
+            <div class="muted">Sit tight and look innocent.</div>
+          </div>
         </div>
+
         <div id="vote-area">
-          <p class="muted">Whose TikTok is this?</p>
+          <p class="play-status">Whose TikTok is this?</p>
           <div id="vote-buttons"></div>
+          <p class="muted small" id="vote-hint">Tap a name. You can't change it.</p>
         </div>
-        <p class="play-score">Score: <span id="score">0</span></p>
+
+        <p class="play-score">Score: <strong id="score">0</strong></p>
       </section>
 
       <!-- ================= REVEAL ================= -->
       <section id="view-reveal" class="hidden">
-        <p class="play-status" id="reveal-msg">…</p>
-        <p class="play-score">Score: <span id="reveal-score">0</span></p>
-        <p class="muted">Waiting for the host…</p>
+        <div class="play-top">
+          <span class="play-round">Round <span id="reveal-round-num">1</span></span>
+        </div>
+        <div id="verdict" class="verdict neutral">
+          <div class="verdict-big" id="reveal-msg">…</div>
+          <div class="muted" id="reveal-sub"></div>
+        </div>
+        <p class="muted center">Waiting for the host to start the next round…</p>
+        <p class="play-score">Score: <strong id="reveal-score">0</strong></p>
       </section>
 
       <!-- ================= FINISHED ================= -->
       <section id="view-finished" class="hidden">
-        <h1>Done</h1>
-        <p class="play-status" id="final-placing">…</p>
-        <p class="play-score">Final score: <span id="final-score">0</span></p>
+        <h1>That's a wrap</h1>
+        <div class="verdict neutral">
+          <div class="verdict-big" id="final-placing">…</div>
+          <div class="muted">Final score: <span id="final-score">0</span></div>
+        </div>
+        <h2>Leaderboard</h2>
+        <ul class="board" id="final-board"></ul>
+        <p class="muted center small" style="margin-top: 16px">
+          Stay on this page — the host can start another game.
+        </p>
       </section>
     </div>
 

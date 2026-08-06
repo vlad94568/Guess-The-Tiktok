@@ -15,5 +15,9 @@
   "dependencies": {
     "express": "^4.22.2",
     "playwright": "^1.62.1"
+  },
+  "devDependencies": {
+    "jsqr": "^1.4.0",
+    "qrcode": "^1.5.4"
   }
 }

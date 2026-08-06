@@ -217,8 +217,22 @@ await host.page.screenshot({ path: 'test/out/4-reveal.png' });
 
 for (const [i, p] of players.entries()) {
   const msg = await text(p.page, '#reveal-msg');
-  log(`  Player${i + 1} sees: "${msg}"`);
-  check(msg.length > 0, `p${i + 1} got a reveal message`);
+  const sub = await text(p.page, '#reveal-sub');
+  const sat = i === sitOutIdx;
+  log(`  Player${i + 1} sees: "${msg}" / "${sub}"`);
+
+  // Assert the ACTUAL outcome, not merely that some text exists. The previous
+  // "message is non-empty" check passed while the screen showed a bare "…", hiding a
+  // real bug: ownerUid was subscribed while the rules still denied it, and Firebase
+  // never retries a rejected listener, so the answer never arrived.
+  check(!/^[….]*$/.test(msg), `p${i + 1} reveal is not a placeholder`);
+  if (sat) {
+    check(/yours/i.test(msg), `p${i + 1} (owner) told it was theirs`);
+  } else {
+    check(/correct|nope|slow/i.test(msg), `p${i + 1} got a real verdict`);
+    check(/^It was .+\./.test(sub), `p${i + 1} was told who it actually was`);
+    check(new RegExp(owner.trim()).test(sub), `p${i + 1} named the same owner as the host`);
+  }
 }
 check((await text(host.page, '#reveal-owner')) === (await hostOwnerFromBoard(host.page)) || true, 'reveal rendered');
 
