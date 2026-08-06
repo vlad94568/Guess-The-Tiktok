@@ -126,7 +126,7 @@ app.post('/scrape', async (req, res) => {
     const hit = await readCache(handle, mode);
     if (hit) {
       console.log(`[scrape] ${handle}:${mode} -> CACHE HIT (${hit.videos.length} videos)`);
-      return res.json({ ok: true, handle, mode, videos: hit.videos, cached: true });
+      return res.json({ ok: true, handle, mode, videos: hit.videos, sources: hit.sources || null, cached: true });
     }
   }
 
@@ -140,9 +140,12 @@ app.post('/scrape', async (req, res) => {
       return res.json({ ok: false, error: result.error });
     }
 
-    await writeCache(handle, mode, result.videos);
-    console.log(`[scrape] ${handle}:${mode} -> ${result.videos.length} videos (${secs}s)`);
-    return res.json({ ok: true, handle, mode, videos: result.videos, cached: false });
+    await writeCache(handle, mode, result.videos, result.sources);
+    const breakdown = result.sources
+      ? ' [' + Object.entries(result.sources).map(([k, v]) => `${k}=${v}`).join(' ') + ']'
+      : '';
+    console.log(`[scrape] ${handle}:${mode} -> ${result.videos.length} videos${breakdown} (${secs}s)`);
+    return res.json({ ok: true, handle, mode, videos: result.videos, sources: result.sources, cached: false });
   } catch (err) {
     // Last line of defence: a structured code, never a 500 and never a stack trace.
     console.error('[scrape] queue failure:', String(err?.message || err));

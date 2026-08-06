@@ -110,15 +110,19 @@ const LIMITS = {
   PER_SOURCE_VIDEOS: 50,
   // 'both' keeps up to 50 reposts + 50 likes, deduped.
   MAX_VIDEOS: 100,
-  // Fetch well past PER_SOURCE_VIDEOS so the random pick has something to choose from.
-  // Taking the first 50 would just be "the 50 most recent", which is not random at all.
-  MAX_FETCH: 200,
+  // Fetch deep before sampling, so the random 50 is drawn from someone's whole history
+  // rather than just their recent activity. 1000 is well past what most accounts have;
+  // the time budget below is what actually stops it in practice.
+  MAX_FETCH: 1000,
   // Likes only: ignore anything liked longer ago than this. Reposts CANNOT be filtered
   // this way — see LIKES_WINDOW_DAYS note in collectLikes.
   LIKES_WINDOW_DAYS: 90,
-  PAGINATION_BUDGET_MS: 20_000, // raised from 15s: we now fetch a deeper pool to sample from
+  // A page is ~30 ids and costs ~0.6s including the polite delay, so 1000 ids is ~34
+  // pages ≈ 20s per source. This budget is the real limit on depth: whatever has been
+  // collected when it expires is what gets sampled.
+  PAGINATION_BUDGET_MS: 30_000,
   PAGE_SIZE: 30, // what TikTok's own client asks for
-  MAX_PAGES: 12, // belt-and-braces against a hasMore that never goes false
+  MAX_PAGES: 40, // 40 * 30 = 1200, comfortably above MAX_FETCH
   INTER_PAGE_DELAY_MS: 400,
   PROFILE_GOTO_TIMEOUT_MS: 40_000,
   HYDRATION_SETTLE_MS: 5_000, // blob + template request both land well inside this
@@ -573,10 +577,17 @@ export async function scrape({ handle, mode }) {
     const { info, template } = opened;
 
     let videos;
+    // Per-source breakdown, so 'both' can prove it was actually both. A private-likes
+    // account silently yielding reposts-only is otherwise indistinguishable from a
+    // working union, which is exactly the confusion this reports away.
+    const sources = {};
+
     if (mode === 'reposts') {
       videos = await collectReposts(page, info, template);
+      sources.reposts = videos.length;
     } else if (mode === 'likes') {
       videos = await collectLikes(page, info, template);
+      sources.likes = videos.length;
     } else {
       // mode 'both' = up to 50 reposts + 50 likes, deduped (so 100 when both halves are
       // full; fewer if a source is short or the two overlap).
@@ -598,6 +609,9 @@ export async function scrape({ handle, mode }) {
         const codes = results.map((r) => r?.code).filter(Boolean);
         throw new ScrapeError(codes.find((c) => c !== ERRORS.NO_VIDEOS) || codes[0] || ERRORS.NO_VIDEOS);
       }
+      sources.reposts = Array.isArray(reposts) ? reposts.length : reposts?.code || 'failed';
+      sources.likes = Array.isArray(likes) ? likes.length : likes?.code || 'failed';
+
       videos = [...new Set([...(Array.isArray(reposts) ? reposts : []), ...(Array.isArray(likes) ? likes : [])])].slice(
         0,
         LIMITS.MAX_VIDEOS
@@ -605,7 +619,7 @@ export async function scrape({ handle, mode }) {
     }
 
     if (!videos || videos.length === 0) throw new ScrapeError(ERRORS.NO_VIDEOS);
-    return { ok: true, videos };
+    return { ok: true, videos, sources };
   } catch (err) {
     if (err instanceof ScrapeError) {
       // Reason is for the operator's console only; the wire gets just the code.

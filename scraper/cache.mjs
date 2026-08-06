@@ -20,6 +20,21 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const CACHE_DIR = path.join(HERE, '.cache');
 export const TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * BUMP THIS whenever a change alters what a scrape *returns* — pool size, sampling,
+ * filtering, mode semantics.
+ *
+ * Without it, changing the limits does nothing for up to 24h: entries written by the old
+ * code stay valid and keep being served, so the game looks unchanged and you conclude the
+ * edit did not work. That happened for real when the per-source cap went 60 -> 50/100;
+ * every live game kept getting 60 because the caches were only a few hours old.
+ *
+ *   v1: 60 ids per scrape, newest-first
+ *   v2: 50 per source, randomly sampled; 'both' = up to 100; likes prefer last 90 days
+ *   v3: fetch pool deepened to 1000 before sampling
+ */
+export const CACHE_VERSION = 3;
+
 /** Filesystem-safe filename for a `handle:mode` key. Handles are already validated
  *  to [A-Za-z0-9._] upstream, but sanitise anyway so a bad key can never escape the dir. */
 function keyToFile(handle, mode) {
@@ -40,6 +55,11 @@ export async function readCache(handle, mode) {
     const raw = await readFile(file, 'utf8');
     const entry = JSON.parse(raw);
     if (!entry || !Array.isArray(entry.videos) || typeof entry.savedAt !== 'number') return null;
+    // Written by an older build that returned a different shape/size — discard.
+    if (entry.version !== CACHE_VERSION) {
+      await rm(file, { force: true }).catch(() => {});
+      return null;
+    }
     if (Date.now() - entry.savedAt > TTL_MS) {
       await rm(file, { force: true }).catch(() => {});
       return null;
@@ -50,9 +70,9 @@ export async function readCache(handle, mode) {
   }
 }
 
-export async function writeCache(handle, mode, videos) {
+export async function writeCache(handle, mode, videos, sources = null) {
   await ensureDir();
-  const entry = { handle, mode, videos, savedAt: Date.now() };
+  const entry = { version: CACHE_VERSION, handle, mode, videos, sources, savedAt: Date.now() };
   await writeFile(keyToFile(handle, mode), JSON.stringify(entry, null, 2), 'utf8').catch(() => {});
   return entry;
 }

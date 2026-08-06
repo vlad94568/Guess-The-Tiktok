@@ -180,6 +180,9 @@ const esc = (s) =>
 // pool building
 // ===========================================================================
 
+/** uid -> { reposts, likes } from the scraper. Host screen only. */
+const poolBreakdown = {};
+
 async function buildPools() {
   await db.setStatus(S.code, 'loading');
   const entries = Object.entries(S.players);
@@ -192,6 +195,9 @@ async function buildPools() {
     const res = await scrape(p.handle, S.meta.mode);
     if (res.ok && res.videos?.length) {
       await db.writePool(S.code, uid, res.videos);
+      // Keep the per-source split locally for the loading screen. It is not written to
+      // the database: it is host-only diagnostics and players must not see pool details.
+      poolBreakdown[uid] = res.sources || null;
       await db.setPlayerPoolStatus(S.code, uid, { poolStatus: 'ok', poolCount: res.videos.length });
     } else {
       await db.setPlayerPoolStatus(S.code, uid, {
@@ -222,10 +228,24 @@ async function buildPools() {
 
 function renderLoading() {
   $('loading-players').innerHTML = Object.entries(S.players)
-    .map(([, p]) => {
+    .map(([uid, p]) => {
       const s = p.poolStatus || 'pending';
       const who = `<span>${esc(p.name)} <span class="muted">@${esc(p.handle)}</span></span>`;
-      if (s === 'ok') return `<li>${who}<span class="ok">✓ ${p.poolCount} videos</span></li>`;
+      if (s === 'ok') {
+        const src = poolBreakdown[uid];
+        // Show the split so "both" visibly means both — and so a private-likes account
+        // silently contributing only reposts is obvious rather than invisible.
+        const detail = src
+          ? Object.entries(src)
+              .map(([k, v]) => (typeof v === 'number' ? `${v} ${k}` : `${k}: ${errorText(v).toLowerCase()}`))
+              .join(' · ')
+          : '';
+        return (
+          `<li><span>${esc(p.name)} <span class="muted">@${esc(p.handle)}</span>` +
+          (detail ? `<br><span class="muted small">${esc(detail)}</span>` : '') +
+          `</span><span class="ok">✓ ${p.poolCount} videos</span></li>`
+        );
+      }
       if (s === 'error')
         return (
           `<li><span>${esc(p.name)} <span class="muted">@${esc(p.handle)}</span>` +
