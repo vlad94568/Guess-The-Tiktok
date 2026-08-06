@@ -55,6 +55,13 @@ function fatal(msg) {
   el.classList.remove('hidden');
 }
 
+// Last-resort net. Without this, anything thrown outside a try/catch just leaves the
+// screen blank and the host has nothing to report but "it didn't load".
+window.addEventListener('error', (e) => fatal(`Something broke: ${e.message}`));
+window.addEventListener('unhandledrejection', (e) =>
+  fatal(`Something broke: ${e.reason?.message || e.reason}`)
+);
+
 // ===========================================================================
 // scraper client
 // ===========================================================================
@@ -394,6 +401,11 @@ function renderFinished() {
 // boot
 // ===========================================================================
 (async function main() {
+  // Every view starts hidden, so ANY unhandled throw in here leaves a completely blank
+  // page with no clue what went wrong. Show the lobby shell first and route all errors
+  // to the on-screen banner.
+  show('lobby');
+
   try {
     S.uid = await authReady();
   } catch (e) {
@@ -402,7 +414,19 @@ function renderFinished() {
 
   db.watchServerOffset((o) => (S.offset = o));
 
-  S.code = await createRoom();
+  try {
+    S.code = await createRoom();
+  } catch (e) {
+    const denied = /PERMISSION_DENIED/i.test(e.message || '');
+    return fatal(
+      denied
+        ? 'The database rejected the new room (permission denied). The security rules in ' +
+          'Firebase are out of date for this version of the game — open the Firebase console, ' +
+          'go to Realtime Database → Rules, paste in database.rules.json from the project ' +
+          'folder, and press Publish.'
+        : `Could not create a room: ${e.message}`
+    );
+  }
   $('room-code').textContent = S.code;
 
   const joinUrl = playerJoinUrl();

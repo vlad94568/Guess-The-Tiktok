@@ -37,6 +37,12 @@ function fatal(msg) {
   el.textContent = msg;
   el.classList.remove('hidden');
 }
+
+// Last-resort net: a phone showing a blank page is impossible to debug at a party.
+window.addEventListener('error', (e) => fatal(`Something broke: ${e.message}`));
+window.addEventListener('unhandledrejection', (e) =>
+  fatal(`Something broke: ${e.reason?.message || e.reason}`)
+);
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -262,10 +268,13 @@ const ordinal = (n) => {
 // boot
 // ===========================================================================
 (async function main() {
+  // Show something immediately; every section starts hidden, so an early throw would
+  // otherwise leave a blank phone screen.
+  show('join');
+
   try {
     S.uid = await authReady();
   } catch (e) {
-    show('join');
     return fatal(e.message);
   }
 
