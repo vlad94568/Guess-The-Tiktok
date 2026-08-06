@@ -311,20 +311,29 @@ const ordinal = (n) => {
   $('btn-reset').addEventListener('click', clearSession);
   $('btn-leave-global').addEventListener('click', clearSession);
 
-  // Rejoin after a refresh or the phone locking, rather than creating a ghost player.
-  // The anonymous uid is stable across reloads, so re-joining lands on the same node.
+  // Rejoining is OFFERED, never automatic.
+  //
+  // This used to reattach to the saved room the moment the page loaded, so tapping
+  // "Join a game" dumped you straight back into the previous room with no way to enter a
+  // different code — the page looked broken. The anonymous uid is stable across reloads,
+  // so rejoining still lands on the same player node; it just takes one deliberate tap.
   if (saved?.code) {
     const meta = await db.getMeta(saved.code);
     const players = meta ? await db.getPlayers(saved.code) : {};
-    // Refuse to rejoin a room whose host has gone: that is the corpse this device would
-    // otherwise be stuck in on every refresh.
     const dead = meta?.hostOnline === false;
-    if (meta && players[S.uid] && !dead) {
-      S.code = saved.code;
-      attachRoom(saved.code);
+    const alive = meta && players[S.uid] && !dead;
+
+    if (alive) {
+      $('rejoin-code').textContent = saved.code;
+      $('rejoin-code-2').textContent = saved.code;
+      $('rejoin-box').classList.remove('hidden');
+      $('btn-rejoin').addEventListener('click', () => {
+        S.code = saved.code;
+        attachRoom(saved.code);
+      });
     } else {
+      // The saved room is gone or closed — forget it so it cannot haunt future loads.
       localStorage.removeItem(LS_KEY);
-      show('join');
       if (dead) {
         const err = $('join-error');
         err.textContent = 'That game was closed by the host. Enter a new room code.';

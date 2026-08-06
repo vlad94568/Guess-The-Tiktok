@@ -106,10 +106,19 @@ export const RESPONSE_FIELDS = {
 // ===========================================================================
 
 const LIMITS = {
-  MAX_VIDEOS: 60, // spec cap (~60 videos)
-  PAGINATION_BUDGET_MS: 15_000, // spec cap (15s) — applied to pagination, not scrolling
+  // Final ids kept per source, chosen at RANDOM from everything fetched.
+  PER_SOURCE_VIDEOS: 50,
+  // 'both' keeps up to 50 reposts + 50 likes, deduped.
+  MAX_VIDEOS: 100,
+  // Fetch well past PER_SOURCE_VIDEOS so the random pick has something to choose from.
+  // Taking the first 50 would just be "the 50 most recent", which is not random at all.
+  MAX_FETCH: 200,
+  // Likes only: ignore anything liked longer ago than this. Reposts CANNOT be filtered
+  // this way — see LIKES_WINDOW_DAYS note in collectLikes.
+  LIKES_WINDOW_DAYS: 90,
+  PAGINATION_BUDGET_MS: 20_000, // raised from 15s: we now fetch a deeper pool to sample from
   PAGE_SIZE: 30, // what TikTok's own client asks for
-  MAX_PAGES: 10, // belt-and-braces against a hasMore that never goes false
+  MAX_PAGES: 12, // belt-and-braces against a hasMore that never goes false
   INTER_PAGE_DELAY_MS: 400,
   PROFILE_GOTO_TIMEOUT_MS: 40_000,
   HYDRATION_SETTLE_MS: 5_000, // blob + template request both land well inside this
@@ -356,9 +365,16 @@ async function openProfile(ctx, handle) {
 /**
  * @returns {Promise<{ids: string[], deadRoute: boolean, pages: object[]}>}
  */
-async function paginate(page, route, template, secUid) {
+/**
+ * @param {number|null} sinceMs Stop paging once the server's cursor predates this.
+ *   ONLY meaningful for likes, whose cursor is a millisecond "liked at" timestamp
+ *   counting backwards. The reposts cursor is a plain offset (0, 30, 60...) and carries
+ *   no time at all, so passing sinceMs for reposts would silently truncate the list
+ *   after one page.
+ */
+async function paginate(page, route, template, secUid, sinceMs = null) {
   return page.evaluate(
-    async ({ origin, route, template, secUid, limits, fields }) => {
+    async ({ origin, route, template, secUid, limits, fields, sinceMs }) => {
       const ids = [];
       const pages = [];
       let cursor = '0';
@@ -408,20 +424,40 @@ async function paginate(page, route, template, secUid) {
           statusCode: body?.[fields.STATUS_CODE],
         });
 
-        if (ids.length >= limits.MAX_VIDEOS) break;
+        if (ids.length >= limits.MAX_FETCH) break;
         if (!body?.[fields.HAS_MORE] || items.length === 0) break;
 
         // CRITICAL: echo the server's cursor verbatim. reposts = integer offset,
         // likes = millisecond timestamp. Computing it ourselves breaks likes.
         cursor = String(body[fields.CURSOR]);
 
+        // Likes come back newest-first and the cursor IS the "liked at" time, so once it
+        // passes the cutoff every remaining page is older still.
+        if (sinceMs && Number(cursor) > 0 && Number(cursor) < sinceMs) break;
+
         await new Promise((r) => setTimeout(r, limits.INTER_PAGE_DELAY_MS));
       }
 
-      return { ids: ids.slice(0, limits.MAX_VIDEOS), deadRoute, pages };
+      return { ids: ids.slice(0, limits.MAX_FETCH), deadRoute, pages };
     },
-    { origin: ROUTES.ORIGIN, route, template, secUid, limits: LIMITS, fields: RESPONSE_FIELDS }
+    { origin: ROUTES.ORIGIN, route, template, secUid, limits: LIMITS, fields: RESPONSE_FIELDS, sinceMs }
   );
+}
+
+/**
+ * Uniform random subset, order shuffled. Partial Fisher-Yates — unbiased, and it does
+ * not walk the whole pool when n is much smaller than it.
+ */
+function sample(items, n) {
+  const pool = items.slice();
+  const take = Math.min(n, pool.length);
+  for (let i = 0; i < take; i++) {
+    const j = i + Math.floor(Math.random() * (pool.length - i));
+    const tmp = pool[i];
+    pool[i] = pool[j];
+    pool[j] = tmp;
+  }
+  return pool.slice(0, take);
 }
 
 /**
@@ -450,11 +486,20 @@ async function domFallback(page) {
 // Step 3 — mode handlers.
 // ---------------------------------------------------------------------------
 
+/**
+ * Reposts, UNFILTERED, randomly sampled down to PER_SOURCE_VIDEOS.
+ *
+ * No date window is applied, and none can be: VERIFIED 2026-08-02 the repost item
+ * carries only `createTime` (when the VIDEO was posted) and the cursor is a plain
+ * offset. There is no "reposted at" timestamp anywhere in the response, so filtering by
+ * recency would actually filter by how old the video is — excluding an old clip someone
+ * reposted yesterday, which is the opposite of the intent.
+ */
 async function collectReposts(page, info, template) {
   if (!template) {
     // Could not harvest device params; try the one grid that does render.
     const dom = await domFallback(page);
-    if (dom.length) return dom.slice(0, LIMITS.MAX_VIDEOS);
+    if (dom.length) return sample(dom, LIMITS.PER_SOURCE_VIDEOS);
     throw new ScrapeError(ERRORS.REPOSTS_UNSUPPORTED);
   }
 
@@ -466,9 +511,9 @@ async function collectReposts(page, info, template) {
 
   if (ids.length === 0) {
     const dom = await domFallback(page);
-    if (dom.length) return dom.slice(0, LIMITS.MAX_VIDEOS);
+    if (dom.length) return sample(dom, LIMITS.PER_SOURCE_VIDEOS);
   }
-  return ids;
+  return sample(ids, LIMITS.PER_SOURCE_VIDEOS);
 }
 
 async function collectLikes(page, info, template) {
@@ -481,8 +526,32 @@ async function collectLikes(page, info, template) {
 
   if (!template) throw new ScrapeError(ERRORS.NO_VIDEOS);
 
-  const { ids } = await paginate(page, ROUTES.LIKES, template, info.secUid);
-  return ids;
+  // Prefer RECENT likes, then take a random sample of them.
+  //
+  // A time window is possible for likes and not for reposts, because the likes cursor is
+  // a millisecond "liked at" timestamp counting backwards — VERIFIED 2026-08-01:
+  // 0 -> 1785386989185 -> 1785258440000.
+  //
+  // IMPORTANT LIMITATION: individual items carry no like-time, only the page boundary
+  // does (`createTime` on an item is when the VIDEO was posted). So the window can only
+  // be applied at PAGE granularity — we stop paging once the cursor predates the cutoff,
+  // but cannot drop older entries from within a page we already accepted.
+  //
+  // VERIFIED 2026-08-02 against @fitness, whose most recent like is from 2023: the
+  // window then matches only the first page, and every id in it is older than the
+  // cutoff. Returning those 30 stale ids would be worse than ignoring the window, so if
+  // the window does not yield a full sample we re-fetch unwindowed and sample from the
+  // whole pool instead — 50 random likes out of 234 beats 30 arbitrary old ones.
+  const sinceMs = Date.now() - LIMITS.LIKES_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+  const windowed = await paginate(page, ROUTES.LIKES, template, info.secUid, sinceMs);
+
+  if (windowed.ids.length >= LIMITS.PER_SOURCE_VIDEOS) {
+    return sample(windowed.ids, LIMITS.PER_SOURCE_VIDEOS);
+  }
+
+  const all = await paginate(page, ROUTES.LIKES, template, info.secUid);
+  const pool = all.ids.length >= windowed.ids.length ? all.ids : windowed.ids;
+  return sample(pool, LIMITS.PER_SOURCE_VIDEOS);
 }
 
 // ---------------------------------------------------------------------------
@@ -509,7 +578,10 @@ export async function scrape({ handle, mode }) {
     } else if (mode === 'likes') {
       videos = await collectLikes(page, info, template);
     } else {
-      // mode 'both' = union, deduped. A failure in ONE half is tolerated as long as
+      // mode 'both' = up to 50 reposts + 50 likes, deduped (so 100 when both halves are
+      // full; fewer if a source is short or the two overlap).
+      //
+      // A failure in ONE half is tolerated as long as
       // the other half yields something — a player with public reposts and private
       // likes (by far the most common combination) should still get a playable round
       // rather than an error.

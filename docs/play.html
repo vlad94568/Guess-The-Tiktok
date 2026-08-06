@@ -25,6 +25,16 @@
         <h1>Guess The TikTok</h1>
         <p class="muted">Watch the big screen. Guess whose video is playing.</p>
 
+        <!-- Offered, never forced. Opening this page must always let you join a
+             different room; silently restoring the old one is what made it feel stuck. -->
+        <div id="rejoin-box" class="notice hidden">
+          <h4>You were in room <span id="rejoin-code"></span></h4>
+          <p class="muted small" style="margin: 6px 0 10px">
+            Still going. Pick up where you left off, or join a different room below.
+          </p>
+          <button id="btn-rejoin" class="btn-primary">Rejoin <span id="rejoin-code-2"></span></button>
+        </div>
+
         <label for="f-code">Room code</label>
         <input
           id="f-code"

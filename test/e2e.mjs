@@ -338,6 +338,25 @@ const paths = await host.page.evaluate(() =>
 log('  asset paths: ' + JSON.stringify(paths));
 check(paths.every((p) => !p.startsWith('/')), 'no root-absolute asset paths (works from a /repo/ subpath)');
 
+// --- 11b. reopening play.html never auto-joins ------------------------------
+// Reported bug: tapping "Join a game" dropped you straight back into the old room with
+// no way to enter a different code. Rejoining must be offered, not forced.
+step('11b', 'reopening the player page offers a rejoin instead of forcing one');
+const p2 = players[1].page;
+await p2.reload({ waitUntil: 'domcontentloaded' });
+await p2.waitForSelector('#btn-join:not([disabled])', { timeout: 25000 });
+check(await visible(p2, '#view-join'), 'lands on the join screen, not straight back in the room');
+check(await visible(p2, '#rejoin-box'), 'offers a one-tap rejoin for the room it remembers');
+check(await visible(p2, '#f-code'), 'the room-code field is available for a different game');
+check(!(await p2.locator('#btn-join').isDisabled()), 'joining a different room is possible');
+
+// ...and the offered rejoin still works.
+await p2.click('#btn-rejoin');
+await p2.waitForSelector('#view-lobby:not(.hidden), #view-playing:not(.hidden), #view-reveal:not(.hidden), #view-finished:not(.hidden)', {
+  timeout: 20000,
+});
+check(!(await visible(p2, '#view-join')), 'tapping Rejoin puts the player back in the room');
+
 // --- 12. closing the host frees the players ---------------------------------
 // The reported bug: the host closed their screen, every phone stayed "in" the dead room
 // on refresh, and only a private window escaped it. Runs last, because it closes the
