@@ -12,6 +12,7 @@ import {
   set,
   update,
   onValue,
+  onDisconnect,
   runTransaction,
   serverTimestamp,
 } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-database.js';
@@ -22,6 +23,7 @@ const P = {
   room: (c) => `rooms/${c}`,
   meta: (c) => `rooms/${c}/meta`,
   metaStatus: (c) => `rooms/${c}/meta/status`,
+  metaHostOnline: (c) => `rooms/${c}/meta/hostOnline`,
   players: (c) => `rooms/${c}/players`,
   player: (c, uid) => `rooms/${c}/players/${uid}`,
   playerScore: (c, uid) => `rooms/${c}/players/${uid}/score`,
@@ -84,6 +86,29 @@ export const watchMeta = (code, cb) => sub(P.meta(code), cb);
 export const getMeta = async (code) => (await get(ref(db, P.meta(code)))).val();
 
 export const setStatus = (code, status) => set(ref(db, P.metaStatus(code)), status);
+
+/**
+ * Host-only presence flag.
+ *
+ * Without this a room outlives its host: closing the host tab leaves the room sitting at
+ * status 'lobby' forever, and every phone's saved session rejoins that corpse on refresh
+ * with no way out short of clearing site data. Firebase runs the onDisconnect write
+ * server-side, so it fires even if the tab is closed, the laptop sleeps, or the network
+ * drops — which is exactly the case a beforeunload handler misses.
+ *
+ * Must be re-armed on every reconnect: an onDisconnect registration is consumed when it
+ * fires, so a single drop would otherwise leave the room permanently unguarded.
+ */
+export async function claimHostPresence(code) {
+  const r = ref(db, P.metaHostOnline(code));
+  await onDisconnect(r).set(false);
+  await set(r, true);
+}
+
+export const watchHostOnline = (code, cb) => sub(P.metaHostOnline(code), cb);
+
+/** Host-only: mark the room closed deliberately (e.g. the host clicked away). */
+export const releaseHostPresence = (code) => set(ref(db, P.metaHostOnline(code)), false);
 
 /** Host-side reset for "New Game": clears rounds+pool, keeps players, zeroes scores. */
 export async function resetRoom(code, playerUids) {

@@ -414,6 +414,18 @@ function renderFinished() {
 
   db.watchServerOffset((o) => (S.offset = o));
 
+  // Re-arm host presence on every (re)connect. Firebase consumes an onDisconnect
+  // registration when it fires, so without this a single dropped connection would leave
+  // the room looking alive forever after the host had gone.
+  db.watchConnected(async (connected) => {
+    if (!connected || !S.code) return;
+    try {
+      await db.claimHostPresence(S.code);
+    } catch (e) {
+      console.warn('could not claim host presence:', e.message);
+    }
+  });
+
   try {
     S.code = await createRoom();
   } catch (e) {
@@ -428,6 +440,7 @@ function renderFinished() {
     );
   }
   $('room-code').textContent = S.code;
+  await db.claimHostPresence(S.code).catch((e) => console.warn('host presence:', e.message));
 
   const joinUrl = playerJoinUrl();
   $('join-url').textContent = joinUrl.replace(/^https?:\/\//, '');

@@ -23,6 +23,9 @@ const S = {
   offset: 0,
   round: null,
   phase: null,
+  // null = unknown (a room made by an older build has no flag); only an explicit
+  // `false` means the host has actually gone.
+  hostOnline: null,
   sittingOut: false,
   myVote: null,
   ownerUid: null, // only ever populated at reveal
@@ -53,6 +56,7 @@ const esc = (s) =>
 async function doJoin(code, name, handle) {
   const meta = await db.getMeta(code);
   if (!meta) throw new Error(`No room "${code}". Check the code on the big screen.`);
+  if (meta.hostOnline === false) throw new Error(`Room "${code}" was closed by the host.`);
   if (meta.status !== 'lobby') throw new Error('That game has already started.');
   await db.joinRoom(code, S.uid, name, handle.replace(/^@/, ''));
   localStorage.setItem(LS_KEY, JSON.stringify({ code, name, handle }));
@@ -72,6 +76,10 @@ function attachRoom(code) {
   });
   db.watchPlayers(code, (p) => {
     S.players = p;
+    render();
+  });
+  db.watchHostOnline(code, (v) => {
+    S.hostOnline = v === null || v === undefined ? null : v === true;
     render();
   });
   db.watchCurrentRound(code, (i) => {
@@ -154,7 +162,18 @@ async function vote(guessUid) {
 // render
 // ===========================================================================
 
+/** Forget this device's session and go back to a clean join screen. */
+function clearSession() {
+  localStorage.removeItem(LS_KEY);
+  location.reload();
+}
+
 function render() {
+  // These two are outside the view switch on purpose: a phone must be able to escape a
+  // dead room from ANY screen, which is the whole problem this solves.
+  $('host-gone').classList.toggle('hidden', S.hostOnline !== false);
+  $('btn-leave-global').classList.toggle('hidden', !S.code);
+
   if (!S.meta) return;
   const st = S.meta.status;
   const me = S.players[S.uid];
@@ -280,24 +299,38 @@ const ordinal = (n) => {
 
   db.watchServerOffset((o) => (S.offset = o));
 
-  // Rejoin after a refresh or the phone locking, rather than creating a ghost player.
-  // The anonymous uid is stable across reloads, so re-joining lands on the same node.
   const saved = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
-  if (saved?.code) {
-    const meta = await db.getMeta(saved.code);
-    const players = meta ? await db.getPlayers(saved.code) : {};
-    if (meta && players[S.uid]) {
-      S.code = saved.code;
-      attachRoom(saved.code);
-      return;
-    }
-    localStorage.removeItem(LS_KEY);
-  }
-
-  show('join');
   if (saved) {
     $('f-name').value = saved.name ?? '';
     $('f-handle').value = saved.handle ?? '';
+  }
+
+  // Wire every button BEFORE the rejoin branch. This used to `return` early on a
+  // successful rejoin, which left the leave/reset buttons with no click handler — dead
+  // in precisely the situation they exist for.
+  $('btn-reset').addEventListener('click', clearSession);
+  $('btn-leave-global').addEventListener('click', clearSession);
+
+  // Rejoin after a refresh or the phone locking, rather than creating a ghost player.
+  // The anonymous uid is stable across reloads, so re-joining lands on the same node.
+  if (saved?.code) {
+    const meta = await db.getMeta(saved.code);
+    const players = meta ? await db.getPlayers(saved.code) : {};
+    // Refuse to rejoin a room whose host has gone: that is the corpse this device would
+    // otherwise be stuck in on every refresh.
+    const dead = meta?.hostOnline === false;
+    if (meta && players[S.uid] && !dead) {
+      S.code = saved.code;
+      attachRoom(saved.code);
+    } else {
+      localStorage.removeItem(LS_KEY);
+      show('join');
+      if (dead) {
+        const err = $('join-error');
+        err.textContent = 'That game was closed by the host. Enter a new room code.';
+        err.classList.remove('hidden');
+      }
+    }
   }
 
   $('btn-join').addEventListener('click', async () => {
@@ -321,8 +354,9 @@ const ordinal = (n) => {
     }
   });
 
-  $('btn-leave').addEventListener('click', () => {
-    localStorage.removeItem(LS_KEY);
-    location.reload();
-  });
+  $('btn-leave').addEventListener('click', clearSession);
+
+  // Everything is wired and signed in: the button can now actually do something.
+  $('btn-join').disabled = false;
+  $('btn-join').textContent = 'Join game';
 })();

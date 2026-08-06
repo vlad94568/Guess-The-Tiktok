@@ -14,6 +14,7 @@
           "mode": { ".validate": "newData.val() === 'reposts' || newData.val() === 'likes' || newData.val() === 'both'" },
           "roundCount": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 50" },
           "timerSecs": { ".validate": "newData.isNumber()" },
+          "hostOnline": { ".validate": "newData.isBoolean()" },
           "createdAt": { ".validate": "newData.val() === now || data.val() === newData.val()" },
           "status": { ".validate": "newData.val() === 'lobby' || newData.val() === 'loading' || newData.val() === 'playing' || newData.val() === 'finished'" },
           "$other": { ".validate": false }

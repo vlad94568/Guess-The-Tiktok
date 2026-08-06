@@ -47,7 +47,7 @@ for (let i = 0; i < 2; i++) {
   const ctx = await browser.newContext({ viewport: PHONE });
   const p = await ctx.newPage();
   await p.goto(`${BASE}/play.html${Q}`, { waitUntil: 'domcontentloaded' });
-  await p.waitForSelector('#view-join:not(.hidden)', { timeout: 30000 });
+  await p.waitForSelector('#btn-join:not([disabled])', { timeout: 30000 });
   if (i === 0) await shot(p, 'phone-1-join-empty');
   await p.fill('#f-name', `Player${i + 1}`);
   await p.fill('#f-code', code);

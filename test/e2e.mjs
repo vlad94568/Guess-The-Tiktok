@@ -94,12 +94,20 @@ const players = [];
 for (let i = 0; i < 2; i++) {
   const p = await newCtx(browser, `p${i + 1}`);
   await p.page.goto(`${PLAY_BASE}/play.html${Q}`, { waitUntil: 'domcontentloaded' });
-  await p.page.waitForSelector('#view-join:not(.hidden)', { timeout: 20000 });
+  // Wait for the button to be ENABLED, not merely for the view to appear: the join
+  // screen is rendered before sign-in completes so the phone is never blank.
+  await p.page.waitForSelector('#btn-join:not([disabled])', { timeout: 25000 });
   await p.page.fill('#f-name', `Player${i + 1}`);
   await p.page.fill('#f-code', code);
   await p.page.fill('#f-handle', HANDLES[i]);
   await p.page.click('#btn-join');
-  await p.page.waitForSelector('#view-lobby:not(.hidden)', { timeout: 20000 });
+  await p.page.waitForSelector('#view-lobby:not(.hidden)', { timeout: 20000 }).catch(async (e) => {
+    // A bare selector timeout hides the reason; surface what the phone is showing.
+    log(`  JOIN FAILED. #join-error: ${JSON.stringify(await text(p.page, '#join-error'))}`);
+    log(`  #fatal: ${JSON.stringify(await text(p.page, '#fatal'))}`);
+    log(`  console: ${JSON.stringify(consoleErrors[`p${i + 1}`].slice(-4), null, 2)}`);
+    throw e;
+  });
   players.push(p);
   log(`  Player${i + 1} joined as @${HANDLES[i]}`);
 }
@@ -329,6 +337,29 @@ const paths = await host.page.evaluate(() =>
 );
 log('  asset paths: ' + JSON.stringify(paths));
 check(paths.every((p) => !p.startsWith('/')), 'no root-absolute asset paths (works from a /repo/ subpath)');
+
+// --- 12. closing the host frees the players ---------------------------------
+// The reported bug: the host closed their screen, every phone stayed "in" the dead room
+// on refresh, and only a private window escaped it. Runs last, because it closes the
+// host context that the checks above read from.
+step(12, 'closing the host screen releases the phones');
+const p1 = players[0].page;
+await host.ctx.close();
+await p1.waitForSelector('#host-gone:not(.hidden)', { timeout: 25000 }).catch(() => {});
+check(await visible(p1, '#host-gone'), 'phone is told the host closed the game');
+check(await visible(p1, '#btn-leave-global'), 'an escape button is available');
+
+// The real test: a plain refresh must land on a usable join screen, not the dead room.
+await p1.reload({ waitUntil: 'domcontentloaded' });
+// Wait for boot to FINISH (the button is enabled last), not just for the join view to
+// appear — that now renders immediately, before the stale session has been examined.
+await p1.waitForSelector('#btn-join:not([disabled])', { timeout: 25000 }).catch(() => {});
+check(await visible(p1, '#view-join'), 'refresh returns to the join screen (no private window needed)');
+const stored = await p1.evaluate(() => localStorage.getItem('wt_session'));
+check(stored === null, 'the dead session was cleared from the phone');
+const joinErr = await text(p1, '#join-error');
+log(`  join screen says: "${joinErr}"`);
+check(/closed/i.test(joinErr), 'phone is told why it was kicked out');
 
 // --- done -------------------------------------------------------------------
 log('\n' + '='.repeat(70));
