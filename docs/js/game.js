@@ -119,30 +119,18 @@ export function generateRounds({ pools, roundCount } = {}, rng = Math.random) {
     if (!progressed) break; // everyone exhausted; can't happen while assigned < available
   }
 
-  // --- 4. decide the ORDER: repeatedly take the owner with the most rounds still
-  // owed, never the owner who just went unless they are the only one left. This
-  // spreads a heavy pool out instead of clumping it at the end.
-  // Ties are broken by position in `eligibleOwners` (strict `>` below keeps the
-  // earliest), which is itself rng-derived — so the tie-break is deterministic.
-  const owed = new Map(quota);
-  const order = [];
-  let prev = null;
-  for (let slot = 0; slot < available; slot++) {
-    let pick = null;
-    let fallback = null; // best candidate ignoring the "not twice in a row" rule
-    for (const uid of eligibleOwners) {
-      if (owed.get(uid) <= 0) continue;
-      if (fallback === null || owed.get(uid) > owed.get(fallback)) fallback = uid;
-      if (uid === prev) continue;
-      if (pick === null || owed.get(uid) > owed.get(pick)) pick = uid;
-    }
-    // `pick` is null only when the previous owner is the sole owner with rounds left.
-    const chosen = pick !== null ? pick : fallback;
-    if (chosen === null) break;
-    order.push(chosen);
-    owed.set(chosen, owed.get(chosen) - 1);
-    prev = chosen;
-  }
+  // --- 4. decide the ORDER: shuffle the multiset of owner slots.
+  //
+  // The quotas from step 3 already guarantee balance, so the order only has to be
+  // unpredictable. An earlier version picked "whoever is owed the most, but never twice
+  // in a row", which is perfectly balanced and perfectly GUESSABLE: with two players it
+  // produces A,B,A,B,A,B and everyone works out the pattern by round three. Randomising
+  // instead means the same owner can occasionally come up twice running — that is the
+  // point, not a defect.
+  const order = shuffle(
+    [...quota.entries()].flatMap(([uid, n]) => Array.from({ length: n }, () => uid)),
+    rng
+  );
 
   // --- 5. deal the actual videos off the top of each shuffled pool.
   const cursor = new Map(eligibleOwners.map((uid) => [uid, 0]));

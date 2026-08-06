@@ -7,7 +7,7 @@
 import { authReady } from './firebase.js';
 import * as db from './db.js';
 import { generateRounds, scoreRound, voteProgress, leaderboard } from './game.js';
-import { mountEmbed, unmountEmbed, currentEmbed, watchUrl } from './embed.js';
+import { watchUrl } from './video-link.js';
 import { renderQR } from './qr.js';
 
 const SCRAPER = 'http://localhost:8787';
@@ -39,7 +39,6 @@ const S = {
   roundPlan: null, // { videoId, ownerUid } for the current round
   votes: {},
   phase: null,
-  endsAt: 0,
   advancing: false, // re-entrancy guard around the lock/score/reveal transition
   unsubRound: [],
 };
@@ -125,24 +124,22 @@ const randomCode = () =>
 async function createRoom() {
   const mode = document.querySelector('input[name="mode"]:checked').value;
   const roundCount = Number($('round-count').value);
-  const timerSecs = Number($('timer-secs').value);
 
   for (let attempt = 0; attempt < 8; attempt++) {
     const code = randomCode();
     if (await db.getMeta(code)) continue; // collision, try again
-    await db.createRoom(code, S.uid, { mode, roundCount, timerSecs });
+    await db.createRoom(code, S.uid, { mode, roundCount });
     return code;
   }
   throw new Error('Could not allocate a free room code.');
 }
 
-/** Mode/rounds/timer edits in the lobby rewrite meta, so the players see them too. */
+/** Mode/round-count edits in the lobby rewrite meta, so the players see them too. */
 async function pushSettings() {
   if (!S.code || S.meta?.status !== 'lobby') return;
   await db.createRoom(S.code, S.uid, {
     mode: document.querySelector('input[name="mode"]:checked').value,
     roundCount: Number($('round-count').value),
-    timerSecs: Number($('timer-secs').value),
   });
 }
 
@@ -243,8 +240,7 @@ async function beginRound(i) {
   if (!plan) return fatal(`Round ${i} is missing from the plan.`);
   S.round = i;
   S.roundPlan = plan;
-  const endsAt = Date.now() + S.offset + S.meta.timerSecs * 1000;
-  await db.startRound(S.code, i, { ownerUid: plan.ownerUid, endsAt });
+  await db.startRound(S.code, i, { ownerUid: plan.ownerUid });
 }
 
 /** Attach watchers for round i. Called whenever currentRound changes. */
@@ -254,9 +250,6 @@ function watchRound(i) {
     db.watchRoundPhase(S.code, i, (phase) => {
       S.phase = phase;
       render();
-    }),
-    db.watchRoundEndsAt(S.code, i, (e) => {
-      S.endsAt = e || 0;
     }),
     db.watchVotes(S.code, i, (v) => {
       S.votes = v;
@@ -310,7 +303,6 @@ function render() {
 
   if (st === 'lobby') {
     show('lobby');
-    unmountEmbed($('embed-slot'));
     renderLobby();
     return;
   }
@@ -322,14 +314,12 @@ function render() {
   if (st === 'finished') {
     show('finished');
     renderFinished();
-    unmountEmbed($('embed-slot'));
     return;
   }
 
   // playing
   if (S.phase === 'reveal') {
     show('reveal');
-    unmountEmbed($('embed-slot'));
     renderReveal();
   } else {
     show('playing');
@@ -340,16 +330,20 @@ function render() {
 function renderPlaying() {
   $('round-num').textContent = S.round + 1;
   $('round-total').textContent = S.meta.roundCount;
-  if (S.roundPlan && currentEmbed() !== S.roundPlan.videoId) mountEmbed($('embed-slot'), S.roundPlan.videoId);
-  // Escape hatch: TikTok refuses to embed some videos, and the link also lets the room
-  // watch one properly after the round. Host screen only — it carries the videoId.
+  // Host screen only — this URL carries the videoId.
   if (S.roundPlan) $('watch-link').href = watchUrl(S.roundPlan.videoId);
 
   const prog = voteProgress(Object.keys(S.players), S.roundPlan?.ownerUid, S.votes);
   $('voted-count').textContent = prog.voted.length;
   $('voted-total').textContent = prog.eligible.length;
   // Shows WHO has voted, never WHAT they voted.
-  $('voted-names').textContent = prog.voted.map((u) => S.players[u]?.name).filter(Boolean).join(', ');
+  $('voted-names').textContent = prog.voted.length
+    ? 'Voted: ' + prog.voted.map((u) => S.players[u]?.name).filter(Boolean).join(', ')
+    : '';
+  // With no countdown, the host needs to see exactly who the round is waiting on.
+  $('pending-names').innerHTML =
+    prog.pending.map((u) => `<li>${esc(S.players[u]?.name)}</li>`).join('') ||
+    '<li class="ok">Everyone has voted</li>';
 }
 
 function renderReveal() {
@@ -369,7 +363,7 @@ function renderReveal() {
           `</li>`
         );
       })
-      .join('') || '<li class="muted">Nobody voted in time.</li>';
+      .join('') || '<li class="muted">Nobody voted.</li>';
 
   $('reveal-board').innerHTML = boardHtml();
 }
@@ -392,17 +386,9 @@ function renderFinished() {
   $('final-board').innerHTML = boardHtml();
 }
 
-// ===========================================================================
-// countdown — derived from the authoritative endsAt, never counted locally
-// ===========================================================================
-setInterval(() => {
-  if (S.meta?.status !== 'playing' || S.phase !== 'playing') return;
-  const left = Math.max(0, Math.ceil((S.endsAt - (Date.now() + S.offset)) / 1000));
-  const el = $('countdown');
-  el.textContent = left;
-  el.classList.toggle('urgent', left <= 5);
-  if (left === 0) lockAndReveal();
-}, 250);
+// There is deliberately no countdown. A round ends when every eligible player has
+// voted, or when the host presses "Reveal now" — which is the only thing preventing one
+// asleep phone from stalling the game forever.
 
 // ===========================================================================
 // boot
@@ -452,7 +438,7 @@ setInterval(() => {
     render();
   });
 
-  for (const el of document.querySelectorAll('input[name="mode"], #round-count, #timer-secs'))
+  for (const el of document.querySelectorAll('input[name="mode"], #round-count'))
     el.addEventListener('change', pushSettings);
 
   $('btn-start').addEventListener('click', async () => {
@@ -465,6 +451,7 @@ setInterval(() => {
   });
 
   $('btn-next').addEventListener('click', () => nextRound());
+  $('btn-reveal').addEventListener('click', () => lockAndReveal());
 
   $('btn-newgame').addEventListener('click', async () => {
     // Drop the previous game's round watchers first. They point at paths that

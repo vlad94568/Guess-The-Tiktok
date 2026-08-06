@@ -30,7 +30,6 @@ const P = {
   currentRound: (c) => `rooms/${c}/currentRound`,
   round: (c, i) => `rooms/${c}/rounds/${i}`,
   roundPhase: (c, i) => `rooms/${c}/rounds/${i}/phase`,
-  roundEndsAt: (c, i) => `rooms/${c}/rounds/${i}/endsAt`,
   roundVideoId: (c, i) => `rooms/${c}/rounds/${i}/videoId`,
   roundOwner: (c, i) => `rooms/${c}/rounds/${i}/ownerUid`,
   roundScored: (c, i) => `rooms/${c}/rounds/${i}/scored`,
@@ -53,10 +52,9 @@ const sub = (path, cb, onErr) =>
 /**
  * Firebase's estimate of (server clock - this device's clock) in ms.
  *
- * Countdowns are derived from the authoritative `endsAt` against
- * `Date.now() + offset`, never from a local setInterval count. A phone with a clock a
- * minute out would otherwise show a wildly wrong timer, and the host would lock the
- * round at a moment no player expected.
+ * The countdown that used to need this is gone, but it stays for ordering and
+ * diagnostics: anything time-based must be derived from server time, since a phone
+ * whose clock is a minute out would otherwise disagree with the rest of the room.
  */
 export function watchServerOffset(cb) {
   return onValue(ref(db, '.info/serverTimeOffset'), (s) => cb(s.val() || 0));
@@ -71,13 +69,12 @@ export function watchConnected(cb) {
 // ROOM LIFECYCLE
 // ===========================================================================
 
-export async function createRoom(code, hostUid, { mode, roundCount, timerSecs }) {
+export async function createRoom(code, hostUid, { mode, roundCount }) {
   await set(ref(db, P.meta(code)), {
     code,
     hostUid,
     mode,
     roundCount,
-    timerSecs,
     status: 'lobby',
     createdAt: serverTimestamp(),
   });
@@ -187,11 +184,10 @@ export const getRound = async (code, i) => (await get(ref(db, P.round(code, i)))
  * "this one is yours" WITHOUT anyone being able to enumerate the node and thereby learn
  * the answer (rules restrict sitOut/$uid reads to $uid itself).
  */
-export const startRound = (code, i, { ownerUid, endsAt }) =>
+export const startRound = (code, i, { ownerUid }) =>
   update(ref(db, P.round(code, i)), {
     phase: 'playing',
     startedAt: serverTimestamp(),
-    endsAt,
     [`sitOut/${ownerUid}`]: true,
   });
 
@@ -201,7 +197,6 @@ export const watchCurrentRound = (code, cb) => sub(P.currentRound(code), cb);
 
 // Leaf-level subscriptions: these are the only round fields a player may read.
 export const watchRoundPhase = (code, i, cb) => sub(P.roundPhase(code, i), cb);
-export const watchRoundEndsAt = (code, i, cb) => sub(P.roundEndsAt(code, i), cb);
 export const watchAmISittingOut = (code, i, uid, cb) => sub(P.roundSitOutMe(code, i, uid), (v) => cb(v === true));
 
 /** Readable by players only once phase === 'reveal' (enforced in rules). */

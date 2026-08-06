@@ -8,12 +8,12 @@
         "meta": {
           ".read": "auth != null",
           ".write": "auth != null && $code.matches(/^[A-Z]{4}$/) && newData.child('hostUid').val() === auth.uid && (!data.exists() || data.child('hostUid').val() === auth.uid) && (!data.child('createdAt').exists() || data.child('createdAt').val() + 43200000 > now)",
-          ".validate": "newData.hasChildren(['code', 'hostUid', 'mode', 'roundCount', 'timerSecs', 'status'])",
+          ".validate": "newData.hasChildren(['code', 'hostUid', 'mode', 'roundCount', 'status'])",
           "code": { ".validate": "newData.isString() && newData.val() === $code" },
           "hostUid": { ".validate": "newData.isString()" },
           "mode": { ".validate": "newData.val() === 'reposts' || newData.val() === 'likes' || newData.val() === 'both'" },
           "roundCount": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 50" },
-          "timerSecs": { ".validate": "newData.isNumber() && newData.val() >= 5 && newData.val() <= 120" },
+          "timerSecs": { ".validate": "newData.isNumber()" },
           "createdAt": { ".validate": "newData.val() === now || data.val() === newData.val()" },
           "status": { ".validate": "newData.val() === 'lobby' || newData.val() === 'loading' || newData.val() === 'playing' || newData.val() === 'finished'" },
           "$other": { ".validate": false }
@@ -90,10 +90,6 @@
               ".validate": "newData.val() === 'playing' || newData.val() === 'locked' || newData.val() === 'reveal'"
             },
             "startedAt": { ".read": "auth != null" },
-            "endsAt": {
-              ".read": "auth != null",
-              ".validate": "newData.isNumber()"
-            },
 
             "scored": { ".validate": "newData.isBoolean()" },
 

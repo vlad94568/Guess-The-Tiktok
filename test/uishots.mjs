@@ -35,7 +35,6 @@ await host.waitForFunction(() => /^[A-Z]{4}$/.test(document.getElementById('room
 const code = await txt(host, '#room-code');
 log('room ' + code);
 await host.fill('#round-count', '2');
-await host.fill('#timer-secs', '12');
 await shot(host, 'host-1-lobby-empty');
 
 // landing page, both sizes
@@ -94,7 +93,9 @@ for (const [i, p] of players.entries()) await shot(p, `phone-6-reveal-p${i + 1}`
 
 await host.click('#btn-next');
 await host.waitForSelector('#view-playing:not(.hidden)', { timeout: 30000 });
-await host.waitForSelector('#view-reveal:not(.hidden)', { timeout: 60000 });
+// No timer any more: nobody votes this round, so the host has to force the reveal.
+await host.click('#btn-reveal');
+await host.waitForSelector('#view-reveal:not(.hidden)', { timeout: 30000 });
 await host.click('#btn-next');
 await host.waitForSelector('#view-finished:not(.hidden)', { timeout: 30000 });
 await shot(host, 'host-6-finished');

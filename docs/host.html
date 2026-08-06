@@ -56,8 +56,10 @@
           <div style="flex: 1 1 260px">
             <label for="round-count">Rounds</label>
             <input id="round-count" type="number" value="10" min="1" max="50" />
-            <label for="timer-secs">Seconds per round</label>
-            <input id="timer-secs" type="number" value="20" min="5" max="120" />
+            <p class="muted small">
+              There's no countdown — each round ends when everyone has voted, or when you press
+              <em>Reveal now</em>.
+            </p>
           </div>
         </div>
 
@@ -103,16 +105,29 @@
       <section id="view-playing" class="hidden">
         <div class="host-header">
           <span>Round <span id="round-num">1</span> of <span id="round-total">10</span></span>
-          <span class="countdown" id="countdown">20</span>
           <span>Voted <span id="voted-count">0</span>/<span id="voted-total">0</span></span>
         </div>
-        <div class="embed-slot" id="embed-slot"></div>
-        <p>
-          <a id="watch-link" class="watch-link" href="#" target="_blank" rel="noopener noreferrer"
-            >Open this TikTok in a new tab &#8599;</a
-          >
+
+        <a
+          id="watch-link"
+          class="btn btn-primary watch-cta"
+          href="#"
+          target="_blank"
+          rel="noopener noreferrer"
+          >▶ Open this TikTok</a
+        >
+        <p class="muted center host-big" style="margin-top: 10px">
+          Watch it together, then come back and let everyone vote.
         </p>
+
+        <h2>Waiting on</h2>
+        <ul class="host-list" id="pending-names"></ul>
         <p class="host-big muted center" id="voted-names"></p>
+
+        <button id="btn-reveal" class="host-big">Reveal now</button>
+        <p class="muted center small" id="reveal-hint">
+          Reveals as soon as everyone has voted. Use this if someone's phone is asleep.
+        </p>
       </section>
 
       <!-- ================= REVEAL ================= -->
@@ -123,7 +138,7 @@
         <p class="host-huge">It was <span id="reveal-owner" style="color: var(--accent)">…</span></p>
         <p>
           <a id="reveal-watch-link" class="watch-link" href="#" target="_blank" rel="noopener noreferrer"
-            >Open this TikTok in a new tab &#8599;</a
+            >Open this TikTok again &#8599;</a
           >
         </p>
         <h2>Guesses</h2>

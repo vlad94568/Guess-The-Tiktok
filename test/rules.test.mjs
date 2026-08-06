@@ -81,7 +81,6 @@ async function seed({ phase = 'playing', status = 'playing' } = {}) {
       hostUid: HOST,
       mode: 'reposts',
       roundCount: 3,
-      timerSecs: 20,
       status,
       createdAt: Date.now(),
     },
@@ -97,7 +96,6 @@ async function seed({ phase = 'playing', status = 'playing' } = {}) {
         ownerUid: P1,
         phase,
         startedAt: Date.now(),
-        endsAt: Date.now() + 20000,
         sitOut: { [P1]: true },
       },
     },
@@ -290,6 +288,24 @@ test('writes to a room older than 12 hours are rejected', async () => {
   assert.ok(DENIED(r), `stale room accepted a vote: ${r.status} ${r.text}`);
 });
 
+test('meta still accepts a legacy timerSecs field (deploy-order safety)', async () => {
+  // The timer was removed from the game, but `$other: false` means an unknown field is
+  // rejected outright. If the rule were deleted, whichever of {rules, site} shipped
+  // first would break the other: new rules + old site = rejected writes. Keeping the
+  // field valid-but-optional makes both deploy orders safe.
+  const withLegacy = await write(`rooms/LEGA/meta`, P2, {
+    code: 'LEGA',
+    hostUid: P2,
+    mode: 'reposts',
+    roundCount: 3,
+    timerSecs: 20,
+    status: 'lobby',
+    createdAt: { '.sv': 'timestamp' },
+  });
+  assert.ok(OK(withLegacy), `legacy timerSecs rejected: ${withLegacy.status} ${withLegacy.text}`);
+  await asAdmin('rooms/LEGA', 'DELETE');
+});
+
 test('unauthenticated access is refused outright', async () => {
   const r = await fetch(url(`rooms/${CODE}/meta`));
   assert.ok(r.status === 401, `anon read got ${r.status}`);
@@ -307,7 +323,6 @@ test('ABUSE: room codes are constrained to 4 uppercase letters', async () => {
       hostUid: uid,
       mode: 'reposts',
       roundCount: 3,
-      timerSecs: 20,
       status: 'lobby',
       createdAt: { '.sv': 'timestamp' },
     });

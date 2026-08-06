@@ -104,7 +104,6 @@ before(async () => {
     hostUid: HOST,
     mode: 'reposts',
     roundCount: 3,
-    timerSecs: 20,
     status: 'lobby',
     createdAt: SV,
   });
@@ -128,7 +127,6 @@ before(async () => {
   assert.ok(OK(await write(`rooms/${CODE}/meta/status`, HOST, 'playing')));
   assert.ok(OK(await write(`rooms/${CODE}/currentRound`, HOST, 0)));
   assert.ok(OK(await write(`rooms/${CODE}/rounds/0/phase`, HOST, 'playing')));
-  assert.ok(OK(await write(`rooms/${CODE}/rounds/0/endsAt`, HOST, Date.now() + 60000)));
   assert.ok(OK(await write(`rooms/${CODE}/rounds/0/sitOut/${P1}`, HOST, true)));
   console.log(`  fixture ready in live project, room ${CODE}`);
 });

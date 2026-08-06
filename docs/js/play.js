@@ -23,7 +23,6 @@ const S = {
   offset: 0,
   round: null,
   phase: null,
-  endsAt: 0,
   sittingOut: false,
   myVote: null,
   ownerUid: null, // only ever populated at reveal
@@ -122,9 +121,6 @@ function watchRound(i) {
         });
       }
       render();
-    }),
-    db.watchRoundEndsAt(S.code, i, (e) => {
-      S.endsAt = e || 0;
     }),
     // Reads rounds/$i/sitOut/<my uid> only. The parent is unreadable, so this tells me
     // whether *I* am the owner without revealing who the owner is if I am not.
@@ -260,14 +256,7 @@ const ordinal = (n) => {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 };
 
-// countdown, derived from the authoritative endsAt (never a local tick count)
-setInterval(() => {
-  if (S.meta?.status !== 'playing' || S.phase !== 'playing') return;
-  const left = Math.max(0, Math.ceil((S.endsAt - (Date.now() + S.offset)) / 1000));
-  const el = $('countdown');
-  el.textContent = left;
-  el.classList.toggle('urgent', left <= 5);
-}, 250);
+// No countdown: rounds end when everyone has voted, or when the host reveals manually.
 
 // ===========================================================================
 // boot

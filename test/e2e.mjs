@@ -35,7 +35,6 @@ const PLAY_BASE = SPLIT ? 'https://vlad94568.github.io/Guess-The-Tiktok' : BASE;
 const OUR_ORIGINS = ['localhost:8787', 'vlad94568.github.io'];
 const HANDLES = ['zachking', 'tiktok']; // both verified to have public reposts
 const ROUNDS = 3;
-const TIMER = 10;
 
 mkdirSync('test/out', { recursive: true });
 
@@ -86,7 +85,6 @@ log(`  room code: ${code}`);
 check(/^[A-Z]{4}$/.test(code), 'room code generated');
 
 await host.page.fill('#round-count', String(ROUNDS));
-await host.page.fill('#timer-secs', String(TIMER));
 await host.page.locator('input[name="mode"][value="reposts"]').check();
 await host.page.waitForTimeout(500);
 
@@ -128,28 +126,25 @@ log('  pool results:\n    ' + loadingText.replace(/\n/g, '\n    '));
 check(/videos/.test(loadingText), 'per-player pool counts rendered');
 await host.page.screenshot({ path: 'test/out/2-loading.png' });
 
-// --- 5. the embed actually renders ------------------------------------------
-step(5, 'host renders a real embedded TikTok');
-await host.page.waitForSelector('#embed-slot iframe', { timeout: 20000 });
-const embed = await host.page.evaluate(() => {
-  const f = document.querySelector('#embed-slot iframe');
-  return f ? { src: f.src, w: f.clientWidth, h: f.clientHeight, videoId: f.dataset.videoId } : null;
-});
-log('  ' + JSON.stringify(embed));
-check(!!embed && /tiktok\.com\/embed\/v2\/\d+/.test(embed.src), 'iframe points at the TikTok embed');
-check(!!embed && embed.w > 200 && embed.h > 400, 'iframe has real dimensions');
-
+// --- 5. the host gets a working link, and NO in-page embed -------------------
+step(5, 'host offers a TikTok link (the embed was removed)');
 const link = await host.page.evaluate(() => {
   const a = document.getElementById('watch-link');
-  return a ? { href: a.href, target: a.target, rel: a.rel, visible: a.offsetParent !== null } : null;
+  return a
+    ? { href: a.href, target: a.target, rel: a.rel, visible: a.offsetParent !== null }
+    : null;
 });
 log('  watch link: ' + JSON.stringify(link));
-check(!!link && link.href === `https://www.tiktok.com/@x/video/${embed.videoId}`, 'watch link points at this round\'s video');
+check(!!link && /^https:\/\/www\.tiktok\.com\/@x\/video\/\d+$/.test(link.href), 'watch link points at a real video');
 check(!!link && link.target === '_blank' && /noopener/.test(link.rel), 'watch link opens a new tab safely');
 check(!!link && link.visible, 'watch link visible on host');
-await host.page.waitForTimeout(6000); // let the embed paint
-await host.page.screenshot({ path: 'test/out/3-playing-embed.png' });
-log('  screenshot: test/out/3-playing-embed.png');
+check(
+  (await host.page.locator('iframe').count()) === 0,
+  'no embedded player anywhere on the host page'
+);
+const videoId = link ? link.href.split('/').pop() : null;
+const embed = { videoId }; // later leak checks key off this
+await host.page.screenshot({ path: 'test/out/3-playing.png' });
 
 // --- 6. players never see the answer ----------------------------------------
 step(6, 'player screens leak nothing');
@@ -240,15 +235,26 @@ async function hostOwnerFromBoard() {
   return text(host.page, '#reveal-owner');
 }
 
-// --- 9. round 2 expires on the timer with NO votes --------------------------
-step(9, 'let a round expire on the timer with nobody voting');
+// --- 9. host forces a reveal when someone never votes -----------------------
+// There is no timer any more, so this button is the ONLY thing stopping one asleep
+// phone from stalling the game forever. It has to work with zero votes cast.
+step(9, 'host reveals manually with nobody voting');
 await host.page.click('#btn-next');
 await host.page.waitForSelector('#view-playing:not(.hidden)', { timeout: 20000 });
-log(`  round 2 started, waiting ${TIMER + 4}s without voting…`);
-const t0 = Date.now();
-await host.page.waitForSelector('#view-reveal:not(.hidden)', { timeout: (TIMER + 20) * 1000 });
-log(`  locked+revealed after ${Math.round((Date.now() - t0) / 1000)}s with no votes`);
-check(true, 'timer expiry locks and reveals without any vote');
+
+// Confirm it does NOT advance on its own while a vote is outstanding.
+await host.page.waitForTimeout(4000);
+check(
+  await visible(host.page, '#view-playing'),
+  'round stays open while someone has not voted (no auto-advance)'
+);
+const pending = await text(host.page, '#pending-names');
+log(`  waiting on: ${pending.replace(/\n/g, ', ')}`);
+check(pending.trim().length > 0, 'host shows who the round is waiting on');
+
+await host.page.click('#btn-reveal');
+await host.page.waitForSelector('#view-reveal:not(.hidden)', { timeout: 20000 });
+check(true, '"Reveal now" locks and reveals without any vote');
 const noVotes = await text(host.page, '#reveal-votes');
 check(/Nobody voted/i.test(noVotes), 'reveal handles the zero-vote case');
 

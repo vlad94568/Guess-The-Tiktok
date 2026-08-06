@@ -174,53 +174,57 @@ test('a player with a small pool does not block the others, and balance is as ev
 });
 
 // ===========================================================================
-// 4. same owner never twice in a row (when avoidable)
+// 4. owner ORDER is unpredictable (balance is handled by the quota step)
 // ===========================================================================
 
-test('same owner never appears twice in a row when more than one eligible owner exists', () => {
-  for (let seed = 1; seed <= 30; seed++) {
+test('owner order is not a fixed rotation — two players do not strictly alternate', () => {
+  // The old "most-owed, never twice in a row" rule produced A,B,A,B,A,B for two
+  // players, which the room works out by round three. Across many seeds at least some
+  // games must break strict alternation, or the game is guessable.
+  let gamesWithARepeat = 0;
+  const runs = 40;
+  for (let seed = 1; seed <= runs; seed++) {
     const res = generateRounds(
-      {
-        pools: { alice: pool('a', 5), bob: pool('b', 5), cara: pool('c', 5) },
-        roundCount: 12,
-      },
+      { pools: { alice: pool('a', 6), bob: pool('b', 6) }, roundCount: 10 },
       seeded(seed)
     );
-    assert.equal(
-      adjacentRepeats(res.rounds),
-      0,
-      `seed ${seed}: back-to-back owner in ${res.rounds.map((r) => r.ownerUid).join(',')}`
-    );
+    assert.equal(res.rounds.length, 10);
+    if (adjacentRepeats(res.rounds) > 0) gamesWithARepeat++;
   }
-});
-
-test('two owners alternate perfectly', () => {
-  const res = generateRounds(
-    { pools: { alice: pool('a', 4), bob: pool('b', 4) }, roundCount: 8 },
-    seeded(5)
+  // With a fair shuffle this is overwhelmingly likely; a fixed rotation gives exactly 0.
+  assert.ok(
+    gamesWithARepeat > runs * 0.5,
+    `expected most 2-player games to break alternation, got ${gamesWithARepeat}/${runs}`
   );
-  assert.equal(adjacentRepeats(res.rounds), 0);
 });
 
-test('when a repeat is mathematically forced, the number of repeats is the theoretical minimum', () => {
-  // alice must own 5 of 7 rounds because nobody else has the videos, so at least
-  // 2*5 - 7 - 1 = 2 back-to-back pairs are unavoidable.
-  for (let seed = 1; seed <= 20; seed++) {
+test('randomised order still keeps owner counts balanced', () => {
+  // Randomising the order must not disturb the quotas decided in step 3.
+  for (let seed = 1; seed <= 25; seed++) {
     const res = generateRounds(
-      { pools: { alice: pool('a', 5), bob: ['b1'], cara: ['c1'] }, roundCount: 7 },
+      { pools: { alice: pool('a', 5), bob: pool('b', 5), cara: pool('c', 5) }, roundCount: 12 },
       seeded(seed)
     );
-
     const counts = [...ownerCounts(res.rounds).values()];
-    const n = res.rounds.length;
-    const minPossible = Math.max(0, 2 * Math.max(...counts) - n - 1);
-    assert.equal(n, 7);
-    assert.equal(
-      adjacentRepeats(res.rounds),
-      minPossible,
-      `seed ${seed}: ${res.rounds.map((r) => r.ownerUid).join(',')}`
+    assert.equal(res.rounds.length, 12);
+    assert.ok(
+      Math.max(...counts) - Math.min(...counts) <= 1,
+      `seed ${seed}: unbalanced ${JSON.stringify([...ownerCounts(res.rounds)])}`
     );
   }
+});
+
+test('the owner sequence differs between seeds', () => {
+  const seq = (seed) =>
+    generateRounds(
+      { pools: { alice: pool('a', 6), bob: pool('b', 6), cara: pool('c', 6) }, roundCount: 12 },
+      seeded(seed)
+    )
+      .rounds.map((r) => r.ownerUid)
+      .join(',');
+
+  const seen = new Set([seq(1), seq(2), seq(3), seq(4), seq(5)]);
+  assert.ok(seen.size >= 4, `orders barely vary across seeds: ${[...seen].join(' | ')}`);
 });
 
 test('a single eligible owner still produces rounds (repeats unavoidable)', () => {
