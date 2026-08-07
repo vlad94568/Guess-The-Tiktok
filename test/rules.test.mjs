@@ -306,6 +306,86 @@ test('meta still accepts a legacy timerSecs field (deploy-order safety)', async 
   await asAdmin('rooms/LEGA', 'DELETE');
 });
 
+// --- kicking players -------------------------------------------------------
+// The host may REMOVE a player node and ban the uid. As with the room delete, the
+// permission is delete-only, so it must not become a way to edit anyone's fields.
+
+test('the host can remove a player', async () => {
+  const r = await call(`rooms/${CODE}/players/${P2}`, { as: HOST, method: 'DELETE' });
+  assert.ok(OK(r), `host could not kick a player: ${r.status} ${r.text}`);
+  const left = await asAdmin(`rooms/${CODE}/players/${P2}`);
+  assert.equal(left.text.trim(), 'null', `kicked player survived: ${left.text}`);
+  const other = await asAdmin(`rooms/${CODE}/players/${P1}/name`);
+  assert.ok(other.text.includes('One'), 'kicking one player must not disturb the others');
+});
+
+test('a player cannot kick anybody, including themselves', async () => {
+  const other = await call(`rooms/${CODE}/players/${P1}`, { as: P2, method: 'DELETE' });
+  assert.ok(DENIED(other), `a player kicked someone else: ${other.status} ${other.text}`);
+  const self = await call(`rooms/${CODE}/players/${P2}`, { as: P2, method: 'DELETE' });
+  assert.ok(DENIED(self), `a player deleted their own node: ${self.status} ${self.text}`);
+});
+
+test('the kick permission does not let the host REWRITE a player', async () => {
+  // `!newData.exists()` again. Without it the host could replace a player wholesale —
+  // including their score — in one PUT, bypassing the per-field rules underneath.
+  const forged = await write(`rooms/${CODE}/players/${P2}`, HOST, {
+    name: 'Two',
+    handle: 'two',
+    score: 999,
+  });
+  assert.ok(DENIED(forged), `host rewrote a whole player node: ${forged.status} ${forged.text}`);
+});
+
+test('the host can still write individual player fields after the kick rule', async () => {
+  // Regression guard: the new $uid rule must not shadow the per-field write rules the
+  // host needs for scores and pool status.
+  const score = await write(`rooms/${CODE}/players/${P1}/score`, HOST, 3);
+  assert.ok(OK(score), `host lost the ability to set a score: ${score.status} ${score.text}`);
+  const status = await write(`rooms/${CODE}/players/${P1}/poolStatus`, HOST, 'ok');
+  assert.ok(OK(status), `host lost the ability to set poolStatus: ${status.status} ${status.text}`);
+});
+
+test('a banned uid cannot re-join the room', async () => {
+  // A real join is db.joinRoom's update(), i.e. a PATCH of name+handle together. A PUT of
+  // one field would leave the node without the other and fail hasChildren for an unrelated
+  // reason, which would make this test pass while proving nothing about the ban.
+  const rejoin = (uid) =>
+    call(`rooms/${CODE}/players/${uid}`, {
+      as: uid,
+      method: 'PATCH',
+      body: { name: 'Sneaky', handle: 'sneaky' },
+    });
+
+  await asAdmin(`rooms/${CODE}/meta/status`, 'PUT', 'lobby');
+  await asAdmin(`rooms/${CODE}/players/${P2}`, 'DELETE');
+
+  // Without the ban, re-joining is allowed — proves this test is testing the ban itself.
+  const before = await rejoin(P2);
+  assert.ok(OK(before), `baseline re-join was refused for another reason: ${before.text}`);
+  await asAdmin(`rooms/${CODE}/players/${P2}`, 'DELETE');
+
+  await asAdmin(`rooms/${CODE}/banned/${P2}`, 'PUT', true);
+  const after = await rejoin(P2);
+  assert.ok(DENIED(after), `banned player re-joined: ${after.status} ${after.text}`);
+  const joined = await write(`rooms/${CODE}/players/${P2}/joinedAt`, P2, Date.now());
+  assert.ok(DENIED(joined), `banned player wrote joinedAt: ${joined.status} ${joined.text}`);
+});
+
+test('a ban does not lock out the other players', async () => {
+  await asAdmin(`rooms/${CODE}/meta/status`, 'PUT', 'lobby');
+  await asAdmin(`rooms/${CODE}/banned/${P2}`, 'PUT', true);
+  const r = await write(`rooms/${CODE}/players/${P1}/name`, P1, 'Renamed');
+  assert.ok(OK(r), `an unrelated player was locked out by someone else's ban: ${r.text}`);
+});
+
+test('only the host can write the ban list', async () => {
+  const r = await write(`rooms/${CODE}/banned/${P1}`, P2, true);
+  assert.ok(DENIED(r), `a player banned somebody: ${r.status} ${r.text}`);
+  const self = await write(`rooms/${CODE}/banned/${P2}`, P2, false);
+  assert.ok(DENIED(self), `a player un-banned themselves: ${self.status} ${self.text}`);
+});
+
 // --- room deletion ---------------------------------------------------------
 // The host must be able to bin a finished room (it holds every player's name and
 // @handle), but that permission must not become a general write at the room level.

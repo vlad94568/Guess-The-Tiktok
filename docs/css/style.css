@@ -277,6 +277,23 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--lin
 }
 .host-list li:last-child { border-bottom: none; }
 
+/* Lobby rows: handle and Kick sit together on the right of the name. */
+.lobby-right { display: flex; align-items: center; gap: 14px; }
+.btn-kick {
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  /* The host screen is driven from across the room, so this must be hard to hit by
+     accident but still comfortably clickable. */
+  opacity: 0.65;
+}
+.btn-kick:hover, .btn-kick:focus-visible { opacity: 1; color: var(--bad); border-color: currentColor; }
+
 .embed-slot { display: flex; justify-content: center; min-height: 730px; margin: 10px 0 4px; }
 .embed-slot iframe { border: none; border-radius: 12px; }
 

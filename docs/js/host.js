@@ -158,11 +158,38 @@ async function pushSettings() {
 function renderLobby() {
   const entries = Object.entries(S.players);
   $('player-count').textContent = entries.length;
+  // The kick button carries the uid in a data attribute rather than a closure, because
+  // this list is re-rendered from scratch on every players event — per-row listeners
+  // would be rebound (and leak) each time. One delegated listener handles the lot.
   $('lobby-players').innerHTML =
     entries
-      .map(([, p]) => `<li><span>${esc(p.name)}</span><span class="muted">@${esc(p.handle)}</span></li>`)
+      .map(
+        ([uid, p]) =>
+          `<li><span>${esc(p.name)}</span>` +
+          `<span class="lobby-right"><span class="muted">@${esc(p.handle)}</span>` +
+          `<button class="btn-kick" data-uid="${esc(uid)}" data-name="${esc(p.name)}" ` +
+          `title="Remove ${esc(p.name)} from the room">Kick</button></span></li>`
+      )
       .join('') || '<li class="muted">Waiting for people to join…</li>';
   refreshStartButton();
+}
+
+/**
+ * Remove a player and stop them re-joining.
+ *
+ * Lobby only. Once the plan is written, every round has an ownerUid baked into it, so
+ * kicking mid-game would leave rounds owned by somebody who no longer exists — the reveal
+ * would read "???" and the equal-share fairness the plan is built on would be gone. The
+ * button is not rendered outside the lobby, and this re-checks rather than trusting that.
+ */
+async function kickPlayer(uid, name) {
+  if (S.meta?.status !== 'lobby') return;
+  if (!confirm(`Remove ${name} from the room? They will not be able to re-join this game.`)) return;
+  try {
+    await db.kickPlayer(S.code, uid);
+  } catch (e) {
+    fatal(`Could not remove ${name}: ${e.message}`);
+  }
 }
 
 function refreshStartButton() {
@@ -662,6 +689,12 @@ async function sweepMyOldRooms() {
 
   for (const el of document.querySelectorAll('input[name="mode"], #round-count'))
     el.addEventListener('change', pushSettings);
+
+  // Delegated: the lobby list is rebuilt on every players event.
+  $('lobby-players').addEventListener('click', (e) => {
+    const btn = e.target.closest('.btn-kick');
+    if (btn) kickPlayer(btn.dataset.uid, btn.dataset.name);
+  });
 
   $('btn-start').addEventListener('click', async () => {
     $('btn-start').disabled = true;

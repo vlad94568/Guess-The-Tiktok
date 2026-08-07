@@ -294,6 +294,21 @@ and rejects `newData.val() === auth.uid` — no voting for yourself.
 
 **`currentRound`** — readable by all, writable by host only.
 
+**`players/$uid` — delete-only for the host, plus a `banned` list.** The host can kick a player
+from the lobby. `players/$uid` gets the same `!newData.exists()` treatment as the room node, so
+the host can *remove* a player but never rewrite one — without that clause the host could replace
+a player wholesale, score included, in a single `PUT` that skips every per-field rule.
+
+Removing the node alone would be pointless, since the kicked phone still has the code on screen
+and could re-join in seconds. So `rooms/$code/banned/$uid` is written **first** (before the player
+node is removed, closing the window in between), and the self-join branches of `name`, `handle`
+and `joinedAt` all require `!banned.child(auth.uid).exists()`. The ban entry deliberately outlives
+the player node — it is the record of "not welcome", so it has to survive the thing it describes.
+It dies with the room, and survives **Play again**, which is the point.
+
+Kicking is lobby-only. Once the plan is written every round has an `ownerUid` baked into it, so
+removing a player mid-game would leave rounds owned by somebody who no longer exists.
+
 **`rooms/$code` itself — delete-only, host-only.** No rule grants a *write* at the room level;
 the only thing permitted there is a **removal**, and only by the room's own host:
 

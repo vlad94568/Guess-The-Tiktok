@@ -26,6 +26,8 @@ const S = {
   // null = unknown (a room made by an older build has no flag); only an explicit
   // `false` means the host has actually gone.
   hostOnline: null,
+  // Has this phone ever seen its own player node? Guards the kick detection below.
+  seenMyself: false,
   sittingOut: false,
   myVote: null,
   ownerUid: null, // only ever populated at reveal
@@ -58,6 +60,9 @@ async function doJoin(code, name, handle) {
   if (!meta) throw new Error(`No room "${code}". Check the code on the big screen.`);
   if (meta.hostOnline === false) throw new Error(`Room "${code}" was closed by the host.`);
   if (meta.status !== 'lobby') throw new Error('That game has already started.');
+  // The rules refuse the write anyway; this is only so the phone says WHY instead of
+  // showing a raw permission error.
+  if (await db.isBanned(code, S.uid)) throw new Error('The host removed you from this room.');
   await db.joinRoom(code, S.uid, name, handle.replace(/^@/, ''));
   localStorage.setItem(LS_KEY, JSON.stringify({ code, name, handle }));
   S.code = code;
@@ -75,6 +80,15 @@ function attachRoom(code) {
     render();
   });
   db.watchPlayers(code, (p) => {
+    // Being kicked looks exactly like "my player node vanished". Only treat it as a kick
+    // once this phone has actually SEEN itself in the room — the first players event can
+    // arrive before the join write has landed, and firing on that would throw a phone off
+    // a room it was in the middle of joining.
+    if (S.seenMyself && !p[S.uid] && S.meta) {
+      S.players = p;
+      return kicked();
+    }
+    if (p[S.uid]) S.seenMyself = true;
     S.players = p;
     render();
   });
@@ -166,6 +180,28 @@ async function vote(guessUid) {
 function clearSession() {
   localStorage.removeItem(LS_KEY);
   location.reload();
+}
+
+/**
+ * The host removed this player.
+ *
+ * Detach everything first: the watchers point at a room this phone is no longer part of,
+ * and leaving them attached means a stream of permission errors and a UI that keeps
+ * half-rendering a game it cannot play. The saved session goes too, so a reload lands on a
+ * clean join screen rather than offering to rejoin a room that will refuse it.
+ */
+function kicked() {
+  for (const u of S.unsubRound) u();
+  S.unsubRound = [];
+  S.code = null;
+  S.meta = null;
+  localStorage.removeItem(LS_KEY);
+  show('join');
+  $('rejoin-box')?.classList.add('hidden');
+  $('btn-leave-global').classList.add('hidden');
+  const err = $('join-error');
+  err.textContent = 'The host removed you from the room.';
+  err.classList.remove('hidden');
 }
 
 function render() {
@@ -332,11 +368,15 @@ const ordinal = (n) => {
         attachRoom(saved.code);
       });
     } else {
-      // The saved room is gone or closed — forget it so it cannot haunt future loads.
+      // The saved room is gone, closed, or this phone is no longer in it — forget it so
+      // it cannot haunt future loads.
       localStorage.removeItem(LS_KEY);
-      if (dead) {
+      const banned = meta ? await db.isBanned(saved.code, S.uid).catch(() => false) : false;
+      if (dead || banned) {
         const err = $('join-error');
-        err.textContent = 'That game was closed by the host. Enter a new room code.';
+        err.textContent = banned
+          ? 'The host removed you from that room. Enter a new room code.'
+          : 'That game was closed by the host. Enter a new room code.';
         err.classList.remove('hidden');
       }
     }

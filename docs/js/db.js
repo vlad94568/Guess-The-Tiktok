@@ -26,6 +26,8 @@ const P = {
   metaHostOnline: (c) => `rooms/${c}/meta/hostOnline`,
   players: (c) => `rooms/${c}/players`,
   player: (c, uid) => `rooms/${c}/players/${uid}`,
+  banned: (c) => `rooms/${c}/banned`,
+  bannedUser: (c, uid) => `rooms/${c}/banned/${uid}`,
   playerScore: (c, uid) => `rooms/${c}/players/${uid}/score`,
   pool: (c) => `rooms/${c}/pool`,
   poolUser: (c, uid) => `rooms/${c}/pool/${uid}`,
@@ -177,6 +179,32 @@ export const setPlayerPoolStatus = (code, uid, { poolStatus, poolError = null, p
   update(ref(db, P.player(code, uid)), { poolStatus, poolError, poolCount });
 
 export const setScore = (code, uid, score) => set(ref(db, P.playerScore(code, uid)), score);
+
+/**
+ * Host-only: remove a player from the room and stop them coming back.
+ *
+ * The ban is written FIRST and deliberately so. Between removing the player node and
+ * writing the ban there is a window in which the kicked phone — which is still on the
+ * lobby screen with the code in front of it — could re-join, and the join rules are the
+ * only thing that can refuse it. Ban first, remove second, and that window never exists.
+ *
+ * The ban entry outlives the player node on purpose: it is the record of "not welcome",
+ * so it must survive the thing it is about. It costs one boolean and dies with the room.
+ *
+ * `players/$uid` is a delete-only write for the host (same `!newData.exists()` shape as
+ * the room delete), so this cannot be turned into a way to edit somebody's fields.
+ */
+export async function kickPlayer(code, uid) {
+  await set(ref(db, P.bannedUser(code, uid)), true);
+  await set(ref(db, P.player(code, uid)), null);
+  await set(ref(db, P.poolUser(code, uid)), null); // their scraped ids are no use now
+}
+
+export const watchBanned = (code, cb) => sub(P.banned(code), (v) => cb(v || {}));
+
+/** Has this uid been kicked out of this room? Used for a clear message on re-join. */
+export const isBanned = async (code, uid) =>
+  (await get(ref(db, P.bannedUser(code, uid)))).val() === true;
 
 /** Host-only: +1 atomically, so a re-render or reconnect cannot double-count. */
 export const incrementScore = (code, uid) =>
