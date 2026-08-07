@@ -9,6 +9,7 @@ import * as db from './db.js';
 import { generateRounds, scoreRound, voteProgress, leaderboard } from './game.js';
 import { watchUrl } from './video-link.js';
 import { renderQR } from './qr.js';
+import { ping, unlockAudio } from './sound.js';
 
 const SCRAPER = 'http://localhost:8787';
 
@@ -43,6 +44,11 @@ const S = {
   roundPlan: null, // { videoId, ownerUid } for the current round
   votes: {},
   phase: null,
+  // Which round S.phase describes. The phase of the round we have just left is not the
+  // phase of the round we are entering, and rendering one as the other is how the reveal
+  // screen used to flash the NEXT round's owner. null until the new round's watcher fires.
+  phaseRound: null,
+  pingedRound: null, // last round whose "everyone voted" chime has played
   advancing: false, // re-entrancy guard around the lock/score/reveal transition
   deleteArmed: false, // is the room set to delete itself when this host disconnects?
   unsubRound: [],
@@ -297,7 +303,26 @@ function renderLoading() {
 // round state machine
 // ===========================================================================
 
+/**
+ * Drop everything that belonged to the round we are leaving.
+ *
+ * Must happen BEFORE S.roundPlan is repointed at round i. The reveal screen reads the
+ * owner out of S.roundPlan and is shown whenever S.phase is 'reveal'; leaving a stale
+ * 'reveal' in place while the plan moves on prints the next round's owner on the big
+ * screen for a frame, which is the whole answer.
+ */
+function resetRoundState(i) {
+  S.round = i;
+  S.roundPlan = null;
+  S.phase = null;
+  S.phaseRound = null;
+  S.pingedRound = null;
+  S.votes = {};
+  S.advancing = false;
+}
+
 async function beginRound(i) {
+  if (S.round !== i || S.phaseRound !== i) resetRoundState(i);
   S.advancing = false;
   const plan = await db.getRound(S.code, i);
   if (!plan) return fatal(`Round ${i} is missing from the plan.`);
@@ -312,9 +337,12 @@ function watchRound(i) {
   S.unsubRound = [
     db.watchRoundPhase(S.code, i, (phase) => {
       S.phase = phase;
+      S.phaseRound = i;
       render();
     }),
     db.watchVotes(S.code, i, (v) => {
+      // A late event from a torn-down round must not repopulate the new round's tally.
+      if (S.round !== i) return;
       S.votes = v;
       render();
       maybeLock();
@@ -328,7 +356,17 @@ function maybeLock() {
   const prog = voteProgress(Object.keys(S.players), S.roundPlan.ownerUid, S.votes);
   // eligible can be empty if the owner is somehow the only player left; game.js reports
   // that as allVoted, which would instantly skip the round. Let the timer handle it.
-  if (prog.eligible.length > 0 && prog.allVoted) lockAndReveal();
+  if (prog.eligible.length === 0 || !prog.allVoted) return;
+
+  // Chime once per round, and only for a round that filled up on its own — "Reveal now"
+  // needs no announcing, the host just pressed it. Keyed on the round rather than on a
+  // flag so a reload cannot replay it, and set BEFORE lockAndReveal so the votes watcher
+  // firing again cannot double it.
+  if (S.pingedRound !== S.round) {
+    S.pingedRound = S.round;
+    ping();
+  }
+  lockAndReveal();
 }
 
 async function lockAndReveal() {
@@ -409,8 +447,10 @@ function render() {
     return;
   }
 
-  // playing
-  if (S.phase === 'reveal') {
+  // playing. The phase only counts if it belongs to the round now on screen — otherwise
+  // the moment "Next round" is pressed, the previous round's 'reveal' would be painted
+  // over the new round's plan and name its owner.
+  if (S.phase === 'reveal' && S.phaseRound === S.round) {
     show('reveal');
     renderReveal();
   } else {
@@ -422,20 +462,21 @@ function render() {
 function renderPlaying() {
   $('round-num').textContent = S.round + 1;
   $('round-total').textContent = S.totalRounds ?? S.meta.roundCount;
-  // Host screen only — this URL carries the videoId.
-  if (S.roundPlan) $('watch-link').href = watchUrl(S.roundPlan.videoId);
+  // Host screen only — this URL carries the videoId. Blanked while the next round's plan
+  // is still loading, so the button cannot open the round that just ended.
+  $('watch-link').href = S.roundPlan ? watchUrl(S.roundPlan.videoId) : '#';
 
   const prog = voteProgress(Object.keys(S.players), S.roundPlan?.ownerUid, S.votes);
   $('voted-count').textContent = prog.voted.length;
   $('voted-total').textContent = prog.eligible.length;
-  // Shows WHO has voted, never WHAT they voted.
-  $('voted-names').textContent = prog.voted.length
-    ? 'Voted: ' + prog.voted.map((u) => S.players[u]?.name).filter(Boolean).join(', ')
-    : '';
-  // With no countdown, the host needs to see exactly who the round is waiting on.
-  $('pending-names').innerHTML =
-    prog.pending.map((u) => `<li>${esc(S.players[u]?.name)}</li>`).join('') ||
-    '<li class="ok">Everyone has voted</li>';
+  // Counts, never names — see the comment on this block in host.html. The owner is not
+  // eligible to vote, so a named "waiting on" list eventually contains everyone EXCEPT
+  // the owner, which is the answer printed on the big screen.
+  const left = prog.pending.length;
+  $('pending-count').textContent = left
+    ? `${left} ${left === 1 ? 'player' : 'players'} still to vote`
+    : 'Everyone has voted';
+  $('pending-count').classList.toggle('ok', left === 0);
 }
 
 function renderReveal() {
@@ -678,6 +719,12 @@ async function sweepMyOldRooms() {
   db.watchCurrentRound(S.code, async (i) => {
     if (i === null || i === undefined) return;
     if (S.round !== i || !S.roundPlan) {
+      // Clear first, repaint, then fetch. Anything that renders during the await must see
+      // "new round, nothing known yet" rather than the old phase against the new plan.
+      if (S.round !== i) {
+        resetRoundState(i); // also sets S.round
+        render();
+      }
       S.round = i;
       S.roundPlan = await db.getRound(S.code, i);
     }
@@ -695,6 +742,12 @@ async function sweepMyOldRooms() {
     const btn = e.target.closest('.btn-kick');
     if (btn) kickPlayer(btn.dataset.uid, btn.dataset.name);
   });
+
+  // Audio can only be started from a real click, and the chime fires later from a
+  // database event. Every host button re-arms it, so a tab that was reloaded mid-game
+  // is not left silent for the rest of the night.
+  for (const id of ['btn-start', 'btn-next', 'btn-reveal'])
+    $(id).addEventListener('click', unlockAudio);
 
   $('btn-start').addEventListener('click', async () => {
     $('btn-start').disabled = true;
@@ -738,6 +791,8 @@ async function sweepMyOldRooms() {
     S.totalRounds = null;
     S.roundPlan = null;
     S.phase = null;
+    S.phaseRound = null;
+    S.pingedRound = null;
     S.votes = {};
     S.advancing = false;
     await db.resetRoom(S.code, Object.keys(S.players));

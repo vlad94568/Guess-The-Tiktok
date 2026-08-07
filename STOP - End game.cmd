@@ -1,34 +1,40 @@
 @echo off
-REM Shuts the game down and frees the memory the headless browser holds.
+setlocal
+REM Ends the game: kills the server, frees the memory the headless browser holds, and
+REM deletes every scraped TikTok list from disk.
+REM
+REM The work is in scraper\stop.ps1. Inline PowerShell inside a .cmd is quoting-fragile
+REM and silently mangled an earlier version of this script.
 title Guess The TikTok - stopping
-echo.
-echo   Shutting down...
-echo.
-
-REM Match on the COMMAND LINE, not on who owns the port. On Windows a second server
-REM can bind an in-use port via SO_REUSEADDR, so killing only the socket owner can
-REM leave a survivor running and the port still listening.
-powershell -NoProfile -Command ^
-  "$ErrorActionPreference='SilentlyContinue';" ^
-  "$targets = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*server.mjs*' -or $_.CommandLine -like '*http.server 3000*' };" ^
-  "foreach($t in $targets){ Stop-Process -Id $t.ProcessId -Force; Write-Host ('   stopped ' + $t.Name) }" ^
-  "if(-not $targets){ Write-Host '   nothing was running' }"
-
-REM A forced stop skips the server's clean shutdown, so sweep up any headless
-REM Chromium left behind. Only processes from the playwright cache are touched.
-powershell -NoProfile -Command ^
-  "$ErrorActionPreference='SilentlyContinue';" ^
-  "$p = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '*ms-playwright*' };" ^
-  "if($p){ $p | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; Write-Host ('   freed ' + @($p).Count + ' browser process(es)') } else { Write-Host '   no leftover browser processes' }"
-
-powershell -NoProfile -Command ^
-  "Start-Sleep -Milliseconds 800;" ^
-  "foreach($port in 8787,3000){" ^
-  "  $c = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue;" ^
-  "  if($c){ Write-Host ('   [!] port ' + $port + ' STILL in use') }" ^
-  "}"
+cd /d "%~dp0"
 
 echo.
-echo   Done. Memory freed.
+echo   Shutting down and deleting this game's data...
 echo.
-ping -n 4 127.0.0.1 >nul 2>&1
+
+REM The Chromium profile is TikTok cookies only - no player data - and rebuilding it
+REM means a captcha on nearly every scrape. Kept unless asked. Defaults to N after 10s
+REM so a double-click-and-walk-away never leaves the window sitting on a prompt.
+set "WIPE="
+choice /C YN /T 10 /D N /N /M "   Also delete the saved TikTok login cookies? Slower next game. [y/N] "
+if errorlevel 2 goto :run
+if errorlevel 1 set "WIPE=-WipeProfile"
+
+:run
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scraper\stop.ps1" %WIPE%
+set "RC=%ERRORLEVEL%"
+
+echo.
+if not "%RC%"=="0" (
+  echo   [!] Cleanup did not finish cleanly ^(code %RC%^) - see the lines above.
+  echo       Run this again; if a port is still in use, reboot.
+) else (
+  echo   Done. Memory freed, saved TikTok lists deleted.
+)
+echo.
+echo   Player names, handles and votes live in Firebase, not on this PC. They are
+echo   deleted when you close the host tab; anything left over is cleaned up the
+echo   next time you open the host screen.
+echo.
+ping -n 5 127.0.0.1 >nul 2>&1

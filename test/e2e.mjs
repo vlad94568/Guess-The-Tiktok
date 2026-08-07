@@ -205,11 +205,16 @@ for (const [i, p] of players.entries()) {
 }
 await host.page.waitForTimeout(1500);
 const counter = await text(host.page, '#voted-count');
-const names = await text(host.page, '#voted-names');
-log(`  host counter: ${counter}/${await text(host.page, '#voted-total')}  names: "${names}"`);
+log(`  host counter: ${counter}/${await text(host.page, '#voted-total')}`);
 check(counter === '1', 'vote counter incremented');
 const hostBody = await host.page.evaluate(() => document.getElementById('view-playing').innerHTML);
 check(!/guessed/i.test(hostBody), 'host does not show WHAT anyone voted during play');
+// The playing screen must not name anybody: who has and has not voted identifies the
+// owner by omission, and the host screen is in the room with the players.
+check(
+  !/Player[12]/.test(hostBody),
+  'host playing screen names nobody (no vote-progress name leak)'
+);
 
 // --- 8. reveal + scoring ----------------------------------------------------
 step(8, 'reveal shows the owner, guesses and leaderboard');
@@ -260,9 +265,10 @@ check(
   await visible(host.page, '#view-playing'),
   'round stays open while someone has not voted (no auto-advance)'
 );
-const pending = await text(host.page, '#pending-names');
-log(`  waiting on: ${pending.replace(/\n/g, ', ')}`);
-check(pending.trim().length > 0, 'host shows who the round is waiting on');
+const pending = await text(host.page, '#pending-count');
+log(`  waiting on: ${pending}`);
+check(/\d+\s+players?\s+still to vote/i.test(pending), 'host shows how many are still to vote');
+check(!/Player[12]/.test(pending), 'host does not name who is still to vote');
 
 await host.page.click('#btn-reveal');
 await host.page.waitForSelector('#view-reveal:not(.hidden)', { timeout: 20000 });

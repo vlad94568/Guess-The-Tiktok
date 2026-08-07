@@ -120,9 +120,10 @@
           Watch it together, then come back and let everyone vote.
         </p>
 
+        <!-- Counts only, never names. This screen is in the room: naming who has not
+             voted names the owner by omission (owners never vote on their own round). -->
         <h2>Waiting on</h2>
-        <ul class="host-list" id="pending-names"></ul>
-        <p class="host-big muted center" id="voted-names"></p>
+        <p class="host-huge center" id="pending-count">…</p>
 
         <button id="btn-reveal" class="host-big">Reveal now</button>
         <p class="muted center small" id="reveal-hint">

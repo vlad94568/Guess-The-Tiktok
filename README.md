@@ -148,7 +148,8 @@ or per player: every scrape opens a page and closes it on all paths, including e
 
 There is **no idle shutdown**. The browser is released when the server exits, so run
 `STOP - End game.cmd` when the party is over or it holds that memory indefinitely. That script
-also sweeps up any headless Chromium orphaned by a hard kill.
+also sweeps up any headless Chromium orphaned by a hard kill, and deletes every scraped TikTok
+list from disk — see "What is stored, and when it goes away".
 
 ---
 
@@ -329,8 +330,8 @@ delete, and the same permission refuses a room-level write.
 | Where | What | Lifetime |
 |---|---|---|
 | Firebase `rooms/$CODE` | player names, TikTok @handles, scraped video ids, votes, scores | **deleted when the host closes the tab** (see below) |
-| `scraper/.cache/*.json` | one file per `handle:mode` — the handle and up to 100 video ids | 24h TTL, and every stale file is swept on server start |
-| `scraper/.cache/browser-profile/` | ~84 MB Chromium profile, including TikTok cookies | **kept indefinitely, on purpose** |
+| `scraper/.cache/*.json` | one file per `handle:mode` — the handle and up to 100 video ids | **all of them deleted by `STOP - End game.cmd`**; otherwise a 24h TTL, with stale files swept on server start |
+| `scraper/.cache/browser-profile/` | ~84 MB Chromium profile, including TikTok cookies | kept on purpose — `STOP` offers to delete it, and defaults to keeping it |
 | player's phone, `localStorage` | that player's own room code, name and handle | until they clear site data |
 
 The room deletion is registered with Firebase as an `onDisconnect`, so it is the *server* that
@@ -355,10 +356,18 @@ by definition the old ones.
 
 The **Delete room & finish** button on the final-scores screen does the whole thing immediately.
 
+On the PC side, **`STOP - End game.cmd`** is the eraser: it kills the server, sweeps up any
+headless Chromium orphaned by that kill, and then deletes **every** `scraper/.cache/*.json` —
+not only the expired ones the server sweeps at startup. Ending the party and erasing the
+handles and video ids it collected are the same action. The work is in
+[`scraper/stop.ps1`](scraper/stop.ps1), which also takes `-DryRun` (report, change nothing)
+and `-WipeProfile`.
+
 The browser profile is the deliberate exception. It is what keeps TikTok from throwing a captcha
-at every scrape, and rebuilding it costs a cold start plus a much higher block rate. Delete
-`scraper/.cache/browser-profile/` by hand if you want the TikTok cookies gone; the scraper will
-recreate an empty one on the next run.
+at every scrape, it contains nothing about the players, and rebuilding it costs a cold start plus
+a much higher block rate. `STOP` asks whether to delete it and keeps it if you say nothing;
+answering **y** (or running `stop.ps1 -WipeProfile`) removes the TikTok cookies, and the scraper
+recreates an empty profile on the next run.
 
 ---
 
