@@ -11,6 +11,8 @@ import {
   scoreRound,
   voteProgress,
   leaderboard,
+  scoringMode,
+  SCORING,
 } from '../docs/js/game.js';
 
 // --- seeded PRNG (mulberry32) ---------------------------------------------
@@ -605,6 +607,73 @@ test('points never drop below 1, however many voted', () => {
   assert.ok(
     awards.every((a) => a.points >= 1),
     'every correct answer scores at least 1'
+  );
+});
+
+// --- flat scoring, and the room setting that selects it ---------------------
+
+test('scoringMode: only an explicit "placement" turns the race on', () => {
+  assert.equal(scoringMode({ scoring: 'placement' }), SCORING.PLACEMENT);
+  assert.equal(scoringMode({ scoring: 'flat' }), SCORING.FLAT);
+  // A room from before the setting existed was played as flat +1 and must stay that way.
+  assert.equal(scoringMode({}), SCORING.FLAT, 'a room with no setting is flat');
+  assert.equal(scoringMode(null), SCORING.FLAT);
+  assert.equal(scoringMode(undefined), SCORING.FLAT);
+  assert.equal(scoringMode({ scoring: 'nonsense' }), SCORING.FLAT, 'a junk value is flat');
+});
+
+test('flat scoring pays 1 per correct answer regardless of order', () => {
+  const players = ['alice', 'bob', 'cara', 'dan', 'eve', 'fred'];
+  const votes = {
+    bob: at('alice', 100),
+    cara: at('alice', 200),
+    dan: at('alice', 300),
+    eve: at('bob', 400),
+    fred: at('alice', 500),
+  };
+
+  const { awards, points } = scoreRound(votes, 'alice', players, SCORING.FLAT);
+  assert.deepEqual(
+    awards.map((a) => a.points),
+    [1, 1, 1, 1],
+    'speed buys nothing in a flat game'
+  );
+  assert.deepEqual(points, { bob: 1, cara: 1, dan: 1, fred: 1 });
+  assert.equal(points.eve, undefined, 'a wrong answer still scores nothing');
+});
+
+test('flat scoring still reports the order, it just does not pay for it', () => {
+  // `place` stays populated so the reveal screens are free to mention it; only the points
+  // differ between the two modes.
+  const players = ['alice', 'bob', 'cara'];
+  const votes = { cara: at('alice', 900), bob: at('alice', 100) };
+  const { awards } = scoreRound(votes, 'alice', players, SCORING.FLAT);
+  assert.deepEqual(awards, [
+    { uid: 'bob', place: 1, points: 1 },
+    { uid: 'cara', place: 2, points: 1 },
+  ]);
+});
+
+test('the two modes agree on who was right and disagree only on points', () => {
+  const players = ['alice', 'bob', 'cara', 'dan'];
+  const votes = { bob: at('alice', 10), cara: at('alice', 20), dan: at('bob', 30) };
+
+  const race = scoreRound(votes, 'alice', players, SCORING.PLACEMENT);
+  const flat = scoreRound(votes, 'alice', players, SCORING.FLAT);
+
+  assert.deepEqual(race.correct, flat.correct);
+  assert.deepEqual(race.incorrect, flat.incorrect);
+  assert.deepEqual(
+    race.awards.map((a) => a.place),
+    flat.awards.map((a) => a.place)
+  );
+  assert.deepEqual(
+    race.awards.map((a) => a.points),
+    [3, 2]
+  );
+  assert.deepEqual(
+    flat.awards.map((a) => a.points),
+    [1, 1]
   );
 });
 

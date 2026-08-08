@@ -77,6 +77,24 @@ function voteTimeOf(vote) {
   return typeof at === 'number' && Number.isFinite(at) ? at : Infinity;
 }
 
+/** The two scoring rules a room can be played under. `meta.scoring` holds one of these. */
+export const SCORING = { PLACEMENT: 'placement', FLAT: 'flat' };
+
+/**
+ * What scoring a room uses, from its meta.
+ *
+ * An ABSENT field means FLAT, deliberately. Rooms created before this setting existed have
+ * no `scoring` key and were played as flat +1, so that is what they must keep scoring as —
+ * and if `meta/scoring` is ever rejected (rules not yet published, see README), the room
+ * quietly plays the old way instead of silently switching everyone's points mid-game.
+ *
+ * New rooms always write the field explicitly, so the default only ever applies to rooms
+ * that predate it.
+ */
+export function scoringMode(meta) {
+  return meta?.scoring === SCORING.PLACEMENT ? SCORING.PLACEMENT : SCORING.FLAT;
+}
+
 /** 1 -> '1st'. Presentation, but pure, and both screens need exactly this. */
 export function ordinal(n) {
   const s = ['th', 'st', 'nd', 'rd'];
@@ -237,8 +255,16 @@ export function generateRounds({ pools, roundCount } = {}, rng = Math.random) {
 // ===========================================================================
 
 /**
- * PLACEMENT SCORING. A wrong guess is worth nothing; a correct one is worth more the
- * sooner it came in.
+ * Score one round. A wrong guess is never worth anything, under either scoring rule.
+ *
+ *   SCORING.FLAT      — every correct answer is worth 1, as the game originally scored.
+ *   SCORING.PLACEMENT — a correct answer is worth more the sooner it came in.
+ *
+ * `place` is filled in either way, because the ORDER is real regardless of whether the room
+ * pays for it; only `points` changes. That keeps the reveal screens free to mention who got
+ * there first even in a flat game, and means the two modes differ in exactly one expression.
+ *
+ * The rest of this comment describes PLACEMENT.
  *
  * Correct voters are ranked against EACH OTHER, not against everyone who voted. Being slow
  * costs nothing if the people ahead of you were wrong, so the reward is for knowing the
@@ -261,6 +287,9 @@ export function generateRounds({ pools, roundCount } = {}, rng = Math.random) {
  * @param {string} ownerUid
  * @param {string[]} [playerUids] - everyone in the room, to size the ladder. Omit and the
  *   ladder falls back to the number of correct voters.
+ * @param {'placement'|'flat'} [scoring] - defaults to PLACEMENT. Note this is NOT the same
+ *   default as scoringMode(), which answers a different question: what an old ROOM that
+ *   never recorded a preference should be played as. Callers pass scoringMode(meta) here.
  * @returns {{
  *   correct: string[],
  *   incorrect: string[],
@@ -268,7 +297,7 @@ export function generateRounds({ pools, roundCount } = {}, rng = Math.random) {
  *   points: Record<string, number>
  * }}
  */
-export function scoreRound(votes, ownerUid, playerUids = null) {
+export function scoreRound(votes, ownerUid, playerUids = null, scoring = SCORING.PLACEMENT) {
   const safeVotes = votes && typeof votes === 'object' ? votes : {};
   const correctEntries = [];
   const incorrect = [];
@@ -291,11 +320,12 @@ export function scoreRound(votes, ownerUid, playerUids = null) {
   const eligibleCount = playerUids ? voteProgress(playerUids, ownerUid, safeVotes).eligible.length : 0;
   const ladderTop = Math.max(eligibleCount, correctEntries.length);
 
+  const flat = scoring === SCORING.FLAT;
   const awards = correctEntries.map((entry, i) => ({
     uid: entry.uid,
     place: i + 1,
     // Floored at 1 so a correct answer is never worth nothing, however many people voted.
-    points: Math.max(1, ladderTop - i),
+    points: flat ? 1 : Math.max(1, ladderTop - i),
   }));
 
   const points = {};

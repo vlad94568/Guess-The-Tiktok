@@ -6,7 +6,16 @@
 
 import { authReady } from './firebase.js';
 import * as db from './db.js';
-import { generateRounds, scoreRound, voteProgress, leaderboard, guessOf, ordinal } from './game.js';
+import {
+  generateRounds,
+  scoreRound,
+  voteProgress,
+  leaderboard,
+  guessOf,
+  ordinal,
+  scoringMode,
+  SCORING,
+} from './game.js';
 import { watchUrl } from './video-link.js';
 import { renderQR } from './qr.js';
 import { ping, unlockAudio } from './sound.js';
@@ -169,14 +178,22 @@ const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I/O, they look like 1/0
 const randomCode = () =>
   Array.from({ length: 4 }, () => CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]).join('');
 
+/** The lobby form's current settings, in the shape db.createRoom/updateSettings want. */
+function formSettings() {
+  return {
+    mode: document.querySelector('input[name="mode"]:checked').value,
+    roundCount: Number($('round-count').value),
+    scoring: document.querySelector('input[name="scoring"]:checked').value,
+  };
+}
+
 async function createRoom() {
-  const mode = document.querySelector('input[name="mode"]:checked').value;
-  const roundCount = Number($('round-count').value);
+  const settings = formSettings();
 
   for (let attempt = 0; attempt < 8; attempt++) {
     const code = randomCode();
     if (await db.getMeta(code)) continue; // collision, try again
-    await db.createRoom(code, S.uid, { mode, roundCount });
+    await db.createRoom(code, S.uid, settings);
     return code;
   }
   throw new Error('Could not allocate a free room code.');
@@ -190,10 +207,7 @@ async function createRoom() {
  */
 async function pushSettings() {
   if (!S.code || S.meta?.status !== 'lobby') return;
-  await db.updateSettings(S.code, {
-    mode: document.querySelector('input[name="mode"]:checked').value,
-    roundCount: Number($('round-count').value),
-  });
+  await db.updateSettings(S.code, formSettings());
 }
 
 function renderLobby() {
@@ -416,7 +430,12 @@ async function lockAndReveal() {
     // The room roster sizes the placement ladder — see scoreRound. Read the votes back
     // from the database rather than using S.votes: this is the tally that pays out, and it
     // must be the server's copy, not whatever this tab last happened to receive.
-    const { awards } = scoreRound(votes, S.roundPlan.ownerUid, Object.keys(S.players));
+    const { awards } = scoreRound(
+      votes,
+      S.roundPlan.ownerUid,
+      Object.keys(S.players),
+      scoringMode(S.meta)
+    );
     for (const a of awards) await db.addScore(S.code, a.uid, a.points);
   }
   await db.setRoundPhase(S.code, S.round, 'reveal');
@@ -552,7 +571,8 @@ function renderReveal() {
   // reveal screen shows the same places and points that were actually awarded. scoreRound
   // is pure and deterministic (the uid tiebreak is what makes it so), and it is being fed
   // the same votes, so it cannot disagree with what was paid out.
-  const { awards, incorrect } = scoreRound(S.votes, ownerUid, Object.keys(S.players));
+  const scoring = scoringMode(S.meta);
+  const { awards, incorrect } = scoreRound(S.votes, ownerUid, Object.keys(S.players), scoring);
 
   // Correct answers in the order they landed — that ordering IS the scoring now, so it is
   // what the big screen should show. Wrong answers follow.
@@ -566,8 +586,13 @@ function renderReveal() {
       .map(
         (r) =>
           `<li><span>${esc(S.players[r.voter]?.name)} said <strong>${esc(S.players[r.guess]?.name)}</strong></span>` +
+          // The place is only shown when the room actually PAYS for it. In a flat game the
+          // order still exists but is worth nothing, and putting "3rd" next to a score that
+          // does not depend on it just reads as a penalty that was never applied.
           (r.place !== null
-            ? `<span class="ok">✓ ${esc(ordinal(r.place))} +${r.points}</span>`
+            ? scoring === SCORING.PLACEMENT
+              ? `<span class="ok">✓ ${esc(ordinal(r.place))} +${r.points}</span>`
+              : `<span class="ok">✓ +${r.points}</span>`
             : '<span class="bad">✗</span>') +
           `</li>`
       )
@@ -809,7 +834,7 @@ async function sweepMyOldRooms() {
     render();
   });
 
-  for (const el of document.querySelectorAll('input[name="mode"], #round-count'))
+  for (const el of document.querySelectorAll('input[name="mode"], input[name="scoring"], #round-count'))
     el.addEventListener('change', pushSettings);
 
   // Delegated: the lobby list is rebuilt on every players event.

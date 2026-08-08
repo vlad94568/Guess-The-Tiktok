@@ -162,7 +162,7 @@ list from disk — see "What is stored, and when it goes away".
 
 ## Running a game
 
-1. Host opens `host.html`, picks a mode, round count and timer, and creates a room.
+1. Host opens `host.html`, picks a mode, round count and scoring, and creates a room.
 2. Players open `play.html` on their phones, enter the room code, their name and their TikTok
    `@handle`.
 3. Host clicks **Start Game**. Pools are scraped one player at a time; per-player progress and
@@ -172,7 +172,12 @@ list from disk — see "What is stored, and when it goes away".
 
 ### Scoring
 
-A wrong guess is worth nothing. A correct one is worth more the sooner it lands:
+Picked in the lobby, stored as `meta.scoring`, and fixed for the whole game. A wrong guess is
+worth nothing either way.
+
+**Classic** (`flat`) — every correct answer is worth 1. Speed is irrelevant.
+
+**Race** (`placement`, the default) — a correct answer is worth more the sooner it lands:
 
 | | |
 |---|---|
@@ -188,6 +193,10 @@ that person the maximum, rather than punishing them for the round being hard.
 Order comes from a server timestamp on each vote, so a phone with a wrong clock (or a player
 editing the payload) cannot claim first place. Ties break on uid, so the host screen, every phone
 and the points actually awarded always agree.
+
+A room with **no** `scoring` field is played as Classic. That is what rooms created before the
+setting existed were scored as, so an upgrade cannot silently change the maths of a game already
+in progress.
 
 ## Hosting topology
 
@@ -261,7 +270,7 @@ grants it. Nobody can enumerate `/rooms`.
 **`rooms/$code/meta`** — readable by any signed-in user (players need the mode, status, round
 count). Writable only by the uid already recorded in `hostUid`, and a creating write must claim
 `hostUid === auth.uid`, so a room cannot be created on someone else's behalf or taken over
-afterwards. `.validate` pins `mode` and `status` to their legal values, bounds `roundCount` and
+afterwards. `.validate` pins `mode`, `scoring` and `status` to their legal values, bounds `roundCount` and
 `timerSecs`, and forces `code` to equal the key — so a room cannot lie about its own id.
 `$other: false` rejects unknown fields anywhere in `meta`.
 
@@ -333,8 +342,14 @@ The bare-string shape (a uid with no timestamp) is still accepted. That covers n
 against an old site — a phone holding a cached `play.js`, or Pages not yet redeployed — and such
 a vote simply sorts last. It does **not** work the other way round:
 
-> ⚠️ **Publish the rules BEFORE deploying the site.** Old rules validate a vote as `isString`, so
-> a new site writing `{guess, at}` has every vote rejected and the game cannot be played at all.
+> ⚠️ **Publish the rules BEFORE deploying the site.** Two separate things break otherwise, both
+> total:
+> - Old rules validate a vote as `isString`, so a new site writing `{guess, at}` has every vote
+>   rejected — nobody can answer anything.
+> - `meta/$other: false` rejects the unknown `scoring` field, and that field is part of the
+>   room-creation payload, so **no room can be created at all**.
+>
+> Neither degrades quietly. Publish `database.rules.json`, then deploy.
 
 **`currentRound`** — readable by all, writable by host only.
 

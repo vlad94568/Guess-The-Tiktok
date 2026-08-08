@@ -370,6 +370,49 @@ test('meta still accepts a legacy timerSecs field (deploy-order safety)', async 
   await asAdmin('rooms/LEGA', 'DELETE');
 });
 
+test('meta accepts both scoring settings and nothing else', async () => {
+  for (const value of ['placement', 'flat']) {
+    const r = await write(`rooms/${CODE}/meta/scoring`, HOST, value);
+    assert.ok(OK(r), `scoring="${value}" rejected: ${r.status} ${r.text}`);
+  }
+  for (const bad of ['race', '', 1, true]) {
+    const r = await write(`rooms/${CODE}/meta/scoring`, HOST, bad);
+    assert.ok(DENIED(r), `scoring accepted ${JSON.stringify(bad)}: ${r.status} ${r.text}`);
+  }
+});
+
+test('a room can be created with a scoring setting, and without one', async () => {
+  // Without: rooms predating the setting must stay creatable and valid, which is what
+  // makes scoringMode()'s "absent means flat" fallback reachable rather than dead code.
+  const withScoring = await write('rooms/SCOR/meta', P2, {
+    code: 'SCOR',
+    hostUid: P2,
+    mode: 'reposts',
+    roundCount: 3,
+    scoring: 'placement',
+    status: 'lobby',
+    createdAt: { '.sv': 'timestamp' },
+  });
+  assert.ok(OK(withScoring), `room with scoring rejected: ${withScoring.status} ${withScoring.text}`);
+  await asAdmin('rooms/SCOR', 'DELETE');
+
+  const without = await write('rooms/NOSC/meta', P2, {
+    code: 'NOSC',
+    hostUid: P2,
+    mode: 'reposts',
+    roundCount: 3,
+    status: 'lobby',
+    createdAt: { '.sv': 'timestamp' },
+  });
+  assert.ok(OK(without), `room without scoring rejected: ${without.status} ${without.text}`);
+  await asAdmin('rooms/NOSC', 'DELETE');
+});
+
+test('a player cannot change the scoring mid-game', async () => {
+  const r = await write(`rooms/${CODE}/meta/scoring`, P2, 'flat');
+  assert.ok(DENIED(r), `a player rewrote the scoring: ${r.status} ${r.text}`);
+});
+
 test('the host can record plannedRounds, and a player cannot', async () => {
   // How long the game ACTUALLY is. meta.roundCount is only the request, which
   // generateRounds rounds to a multiple of the player count in either direction, so this
@@ -422,11 +465,12 @@ test('a lobby settings change patches meta without wiping hostOnline or createdA
   const r = await call(`rooms/${CODE}/meta`, {
     as: HOST,
     method: 'PATCH',
-    body: { mode: 'both', roundCount: 8 },
+    body: { mode: 'both', roundCount: 8, scoring: 'flat' },
   });
   assert.ok(OK(r), `settings patch rejected: ${r.status} ${r.text}`);
 
   assert.equal((await asAdmin(`rooms/${CODE}/meta/mode`)).text, '"both"');
+  assert.equal((await asAdmin(`rooms/${CODE}/meta/scoring`)).text, '"flat"');
   assert.equal((await asAdmin(`rooms/${CODE}/meta/hostOnline`)).text, 'true', 'hostOnline wiped');
   assert.equal((await asAdmin(`rooms/${CODE}/meta/createdAt`)).text, createdBefore, 'createdAt moved');
 });

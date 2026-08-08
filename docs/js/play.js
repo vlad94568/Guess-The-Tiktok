@@ -9,7 +9,7 @@
 
 import { authReady } from './firebase.js';
 import * as db from './db.js';
-import { leaderboard, scoreRound, guessOf, ordinal } from './game.js';
+import { leaderboard, scoreRound, guessOf, ordinal, scoringMode, SCORING } from './game.js';
 
 const $ = (id) => document.getElementById(id);
 const views = ['join', 'lobby', 'playing', 'reveal', 'finished'];
@@ -291,7 +291,9 @@ function renderPlaying(me) {
   const myGuess = guessOf(S.myVote);
   $('vote-hint').textContent = myGuess
     ? 'Locked in. Watch the big screen.'
-    : "Tap a name. The sooner you answer, the more it's worth.";
+    : scoringMode(S.meta) === SCORING.PLACEMENT
+    ? "Tap a name. The sooner you answer, the more it's worth."
+    : "Tap a name. You can't change it.";
 
   const others = Object.entries(S.players).filter(([uid]) => uid !== S.uid);
   const box = $('vote-buttons');
@@ -335,10 +337,14 @@ function renderReveal(me) {
   if (myGuess !== S.ownerUid)
     return set('wrong', 'Nope', `It was ${ownerName}, not ${S.players[myGuess]?.name ?? '???'}.`);
 
-  // Right — but how much it was worth depends on how many people beat you to it. The votes
-  // node arrives on its own subscription and may land after ownerUid, so fall back to the
-  // plain result until it does rather than showing a points figure that then changes.
-  const mine = scoreRound(S.votes, S.ownerUid, Object.keys(S.players)).awards.find(
+  // Right. In a flat game that is the whole story, and there is nothing to wait for.
+  const scoring = scoringMode(S.meta);
+  if (scoring !== SCORING.PLACEMENT) return set('correct', 'Correct! +1', `It was ${ownerName}.`);
+
+  // In a race game how much it was worth depends on how many people beat you to it. The
+  // votes node arrives on its own subscription and may land after ownerUid, so fall back to
+  // the plain result until it does rather than showing a points figure that then changes.
+  const mine = scoreRound(S.votes, S.ownerUid, Object.keys(S.players), scoring).awards.find(
     (a) => a.uid === S.uid
   );
   if (!mine) return set('correct', 'Correct!', `It was ${ownerName}.`);

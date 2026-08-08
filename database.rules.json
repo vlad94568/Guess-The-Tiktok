@@ -15,6 +15,7 @@
           "hostUid": { ".validate": "newData.isString()" },
           "mode": { ".validate": "newData.val() === 'reposts' || newData.val() === 'likes' || newData.val() === 'both'" },
           "roundCount": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 50" },
+          "scoring": { ".validate": "newData.val() === 'placement' || newData.val() === 'flat'" },
           "timerSecs": { ".validate": "newData.isNumber()" },
           "hostOnline": { ".validate": "newData.isBoolean()" },
           "createdAt": { ".validate": "newData.val() === now || data.val() === newData.val()" },

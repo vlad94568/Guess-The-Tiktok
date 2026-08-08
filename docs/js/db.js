@@ -73,12 +73,13 @@ export function watchConnected(cb) {
 // ROOM LIFECYCLE
 // ===========================================================================
 
-export async function createRoom(code, hostUid, { mode, roundCount }) {
+export async function createRoom(code, hostUid, { mode, roundCount, scoring }) {
   await set(ref(db, P.meta(code)), {
     code,
     hostUid,
     mode,
     roundCount,
+    scoring,
     status: 'lobby',
     createdAt: serverTimestamp(),
   });
@@ -93,8 +94,8 @@ export async function createRoom(code, hostUid, { mode, roundCount }) {
  * window every rule is bounded by. The meta `.validate` requires hasChildren([...]), which
  * an update() satisfies because the rule sees the merged node, not just the patch.
  */
-export const updateSettings = (code, { mode, roundCount }) =>
-  update(ref(db, P.meta(code)), { mode, roundCount });
+export const updateSettings = (code, { mode, roundCount, scoring }) =>
+  update(ref(db, P.meta(code)), { mode, roundCount, scoring });
 
 export const watchMeta = (code, cb) => sub(P.meta(code), cb);
 export const getMeta = async (code) => (await get(ref(db, P.meta(code)))).val();
