@@ -9,7 +9,7 @@
 
 import { authReady } from './firebase.js';
 import * as db from './db.js';
-import { leaderboard } from './game.js';
+import { leaderboard, scoreRound, guessOf, ordinal } from './game.js';
 
 const $ = (id) => document.getElementById(id);
 const views = ['join', 'lobby', 'playing', 'reveal', 'finished'];
@@ -29,8 +29,9 @@ const S = {
   // Has this phone ever seen its own player node? Guards the kick detection below.
   seenMyself: false,
   sittingOut: false,
-  myVote: null,
+  myVote: null, // { guess, at } — read it with guessOf, never directly
   ownerUid: null, // only ever populated at reveal
+  votes: {}, // everyone's, and likewise only readable at reveal
   unsubRound: [],
 };
 
@@ -106,7 +107,8 @@ function attachRoom(code) {
       S.phase = null;
       S.myVote = null;
       S.ownerUid = null;
-      detachOwner();
+      S.votes = {};
+      detachReveal();
       S.sittingOut = false;
       return render();
     }
@@ -115,7 +117,8 @@ function attachRoom(code) {
       S.phase = null;
       S.myVote = null;
       S.ownerUid = null;
-      detachOwner();
+      S.votes = {};
+      detachReveal();
       S.sittingOut = false;
       watchRound(i);
     }
@@ -124,16 +127,16 @@ function attachRoom(code) {
 }
 
 /** Separate from S.unsubRound: attached later than the rest, see below. */
-let unsubOwner = null;
+let unsubReveal = [];
 
-function detachOwner() {
-  if (unsubOwner) unsubOwner();
-  unsubOwner = null;
+function detachReveal() {
+  for (const u of unsubReveal) u();
+  unsubReveal = [];
 }
 
 function watchRound(i) {
   for (const u of S.unsubRound) u();
-  detachOwner();
+  detachReveal();
   S.unsubRound = [
     db.watchRoundPhase(S.code, i, (p) => {
       S.phase = p;
@@ -142,11 +145,22 @@ function watchRound(i) {
       // attaching it at round start (while the phase is still 'playing') leaves a dead
       // subscription and the player never learns who it was — the reveal screen just
       // shows "…". It must be attached AFTER the phase flips.
-      if (p === 'reveal' && !unsubOwner) {
-        unsubOwner = db.watchRoundOwner(S.code, i, (o) => {
-          S.ownerUid = o;
-          render();
-        });
+      //
+      // The whole votes node is gated on 'reveal' the same way, and is needed for the same
+      // reason the owner is: placement scoring means "you were right" is only half the
+      // result, and the phone cannot work out its own place without seeing when everybody
+      // else answered.
+      if (p === 'reveal' && unsubReveal.length === 0) {
+        unsubReveal = [
+          db.watchRoundOwner(S.code, i, (o) => {
+            S.ownerUid = o;
+            render();
+          }),
+          db.watchVotes(S.code, i, (v) => {
+            S.votes = v;
+            render();
+          }),
+        ];
       }
       render();
     }),
@@ -193,6 +207,12 @@ function clearSession() {
 function kicked() {
   for (const u of S.unsubRound) u();
   S.unsubRound = [];
+  // The reveal-phase watchers live outside S.unsubRound and were being left attached — a
+  // subscription to the votes and the owner of a room this phone is no longer in, which is
+  // exactly the permission-error stream the teardown above exists to prevent.
+  detachReveal();
+  S.votes = {};
+  S.ownerUid = null;
   S.code = null;
   S.meta = null;
   localStorage.removeItem(LS_KEY);
@@ -265,22 +285,26 @@ function renderPlaying(me) {
   $('sit-out').classList.toggle('hidden', !S.sittingOut);
   $('vote-area').classList.toggle('hidden', S.sittingOut);
   if (S.sittingOut) return;
-  $('vote-hint').textContent = S.myVote
+  // A vote is `{guess, at}` now, so every read of it goes through guessOf. Comparing the
+  // raw value to a uid would never match, leaving every button live and unhighlighted
+  // after the player had already locked their answer in.
+  const myGuess = guessOf(S.myVote);
+  $('vote-hint').textContent = myGuess
     ? 'Locked in. Watch the big screen.'
-    : "Tap a name. You can't change it.";
+    : "Tap a name. The sooner you answer, the more it's worth.";
 
   const others = Object.entries(S.players).filter(([uid]) => uid !== S.uid);
   const box = $('vote-buttons');
 
   // Rebuild only when the roster changes, so taps aren't lost to a re-render.
-  const sig = others.map(([uid]) => uid).join(',') + '|' + (S.myVote ?? '');
+  const sig = others.map(([uid]) => uid).join(',') + '|' + myGuess;
   if (box.dataset.sig !== sig) {
     box.dataset.sig = sig;
     box.innerHTML = others
       .map(
         ([uid, p]) =>
-          `<button class="vote-btn${S.myVote === uid ? ' chosen' : ''}" data-uid="${esc(uid)}"${
-            S.myVote ? ' disabled' : ''
+          `<button class="vote-btn${myGuess === uid ? ' chosen' : ''}" data-uid="${esc(uid)}"${
+            myGuess ? ' disabled' : ''
           }>${esc(p.name)}</button>`
       )
       .join('');
@@ -303,19 +327,30 @@ function renderReveal(me) {
   // ownerUid only becomes readable when the host flips the phase to reveal, so this
   // can render once before the value has arrived.
   const ownerName = S.players[S.ownerUid]?.name;
+  const myGuess = guessOf(S.myVote);
 
   if (S.sittingOut) return set('neutral', 'That one was yours', 'No points either way.');
   if (!ownerName) return set('neutral', 'Revealing…', '');
-  if (!S.myVote) return set('wrong', "Too slow", `It was ${ownerName}.`);
-  if (S.myVote === S.ownerUid) return set('correct', 'Correct! +1', `It was ${ownerName}.`);
-  set('wrong', 'Nope', `It was ${ownerName}, not ${S.players[S.myVote]?.name ?? '???'}.`);
+  if (!myGuess) return set('wrong', 'Too slow', `It was ${ownerName}.`);
+  if (myGuess !== S.ownerUid)
+    return set('wrong', 'Nope', `It was ${ownerName}, not ${S.players[myGuess]?.name ?? '???'}.`);
+
+  // Right — but how much it was worth depends on how many people beat you to it. The votes
+  // node arrives on its own subscription and may land after ownerUid, so fall back to the
+  // plain result until it does rather than showing a points figure that then changes.
+  const mine = scoreRound(S.votes, S.ownerUid, Object.keys(S.players)).awards.find(
+    (a) => a.uid === S.uid
+  );
+  if (!mine) return set('correct', 'Correct!', `It was ${ownerName}.`);
+  set(
+    'correct',
+    `Correct! +${mine.points}`,
+    `${ordinal(mine.place)} to get it — it was ${ownerName}.`
+  );
 }
 
-const ordinal = (n) => {
-  const s = ['th', 'st', 'nd', 'rd'];
-  const v = n % 100;
-  return n + (s[(v - 20) % 10] || s[v] || s[0]);
-};
+// ordinal() moved to game.js — the reveal screen needs it for placement now, and so does
+// the host screen, so a third copy was one too many.
 
 // No countdown: rounds end when everyone has voted, or when the host reveals manually.
 

@@ -203,6 +203,70 @@ test('a vote naming a non-existent player is rejected', async () => {
   assert.ok(DENIED(await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, 'uid_nobody')));
 });
 
+// --- placement scoring: the timestamped vote shape --------------------------
+// A vote is `{guess, at}` so the host can rank correct answers by who got there first.
+// The bare-string shape stays legal so THESE rules keep working against an OLD site — a
+// phone holding a cached play.js goes on writing strings. It does not make the reverse safe:
+// old rules reject the object, so the rules must always be published before the site.
+
+const STAMP = { '.sv': 'timestamp' };
+
+test('a player CAN cast a timestamped vote', async () => {
+  const r = await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, { guess: P1, at: STAMP });
+  assert.ok(OK(r), `timestamped vote rejected: ${r.status} ${r.text}`);
+});
+
+test('ATTACK: a player cannot forge an earlier vote time', async () => {
+  // The whole scoring order rests on this. `at` is pinned to `now`, so a phone cannot
+  // claim to have answered before it did — and cannot backdate itself to first place.
+  const backdated = await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, {
+    guess: P1,
+    at: Date.now() - 60_000,
+  });
+  assert.ok(DENIED(backdated), `backdated vote accepted: ${backdated.status} ${backdated.text}`);
+
+  const future = await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, {
+    guess: P1,
+    at: Date.now() + 60_000,
+  });
+  assert.ok(DENIED(future), `future-dated vote accepted: ${future.status} ${future.text}`);
+});
+
+test('a timestamped vote obeys every rule the plain shape does', async () => {
+  const self = await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, { guess: P2, at: STAMP });
+  assert.ok(DENIED(self), 'self-vote accepted in object form');
+
+  const ghost = await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, {
+    guess: 'uid_nobody',
+    at: STAMP,
+  });
+  assert.ok(DENIED(ghost), 'vote for a non-player accepted in object form');
+
+  const owner = await write(`rooms/${CODE}/rounds/0/votes/${P1}`, P1, { guess: P2, at: STAMP });
+  assert.ok(DENIED(owner), 'owner voted on their own round in object form');
+});
+
+test('a vote missing either field, or carrying extras, is rejected', async () => {
+  const noAt = await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, { guess: P1 });
+  assert.ok(DENIED(noAt), 'vote without a timestamp accepted');
+
+  const noGuess = await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, { at: STAMP });
+  assert.ok(DENIED(noGuess), 'vote without a guess accepted');
+
+  const extra = await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, {
+    guess: P1,
+    at: STAMP,
+    points: 999,
+  });
+  assert.ok(DENIED(extra), 'a player smuggled an extra field into their vote');
+});
+
+test('a timestamped vote cannot be changed either', async () => {
+  assert.ok(OK(await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, { guess: P1, at: STAMP })));
+  const second = await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, { guess: P1, at: STAMP });
+  assert.ok(DENIED(second), `re-voting should fail: ${second.status} ${second.text}`);
+});
+
 test('votes are unreadable before reveal and readable after', async () => {
   await write(`rooms/${CODE}/rounds/0/votes/${P2}`, P2, P1);
   assert.ok(DENIED(await read(`rooms/${CODE}/rounds/0/votes`, P2)), 'votes leaked before reveal');
@@ -304,6 +368,84 @@ test('meta still accepts a legacy timerSecs field (deploy-order safety)', async 
   });
   assert.ok(OK(withLegacy), `legacy timerSecs rejected: ${withLegacy.status} ${withLegacy.text}`);
   await asAdmin('rooms/LEGA', 'DELETE');
+});
+
+test('the host can record plannedRounds, and a player cannot', async () => {
+  // How long the game ACTUALLY is. meta.roundCount is only the request, which
+  // generateRounds rounds to a multiple of the player count in either direction, so this
+  // is what the host reads back after a mid-game reload instead of probing rounds/0,1,2...
+  await seed();
+  const byHost = await write(`rooms/${CODE}/meta/plannedRounds`, HOST, 6);
+  assert.ok(OK(byHost), `host could not write plannedRounds: ${byHost.status} ${byHost.text}`);
+
+  const byPlayer = await write(`rooms/${CODE}/meta/plannedRounds`, P2, 999);
+  assert.ok(DENIED(byPlayer), `a player rewrote plannedRounds: ${byPlayer.status} ${byPlayer.text}`);
+
+  // Players DO need to read it — it is what the round counter on their screen would use.
+  const seen = await read(`rooms/${CODE}/meta/plannedRounds`, P2);
+  assert.ok(OK(seen) && seen.text === '6', `player could not read plannedRounds: ${seen.text}`);
+});
+
+// --- the two multi-path updates the host does -------------------------------
+// Both are atomic: ONE rejected path fails the whole write. That is what makes them worth
+// testing on their own rather than trusting the per-field rules they are built from.
+
+test('New Game reset clears rounds, pool, currentRound and plannedRounds in one write', async () => {
+  // db.resetRoom. plannedRounds lives under meta while everything else it clears is a
+  // sibling of meta, so this update reaches across two rule scopes at once. If the meta leg
+  // were denied the entire reset would fail and New Game would be dead.
+  await asAdmin(`rooms/${CODE}/meta/plannedRounds`, 'PUT', 6);
+
+  const r = await call(`rooms/${CODE}`, {
+    as: HOST,
+    method: 'PATCH',
+    body: { rounds: null, pool: null, currentRound: null, 'meta/plannedRounds': null },
+  });
+  assert.ok(OK(r), `reset rejected: ${r.status} ${r.text}`);
+
+  assert.equal((await asAdmin(`rooms/${CODE}/rounds`)).text, 'null', 'rounds survived the reset');
+  assert.equal((await asAdmin(`rooms/${CODE}/pool`)).text, 'null', 'pool survived the reset');
+  assert.equal((await asAdmin(`rooms/${CODE}/meta/plannedRounds`)).text, 'null');
+
+  // meta itself must NOT be collateral damage — the room has to stay playable.
+  const meta = (await asAdmin(`rooms/${CODE}/meta`)).text;
+  assert.ok(/hostUid/.test(meta) && /createdAt/.test(meta), `reset damaged meta: ${meta}`);
+});
+
+test('a lobby settings change patches meta without wiping hostOnline or createdAt', async () => {
+  // db.updateSettings. This used to be a full set() of meta, which silently deleted
+  // hostOnline (so no phone could tell the host had gone) and reset createdAt, sliding the
+  // 12-hour window every other rule is bounded by.
+  await asAdmin(`rooms/${CODE}/meta/hostOnline`, 'PUT', true);
+  const createdBefore = (await asAdmin(`rooms/${CODE}/meta/createdAt`)).text;
+
+  const r = await call(`rooms/${CODE}/meta`, {
+    as: HOST,
+    method: 'PATCH',
+    body: { mode: 'both', roundCount: 8 },
+  });
+  assert.ok(OK(r), `settings patch rejected: ${r.status} ${r.text}`);
+
+  assert.equal((await asAdmin(`rooms/${CODE}/meta/mode`)).text, '"both"');
+  assert.equal((await asAdmin(`rooms/${CODE}/meta/hostOnline`)).text, 'true', 'hostOnline wiped');
+  assert.equal((await asAdmin(`rooms/${CODE}/meta/createdAt`)).text, createdBefore, 'createdAt moved');
+});
+
+test('a player cannot patch the room settings', async () => {
+  const r = await call(`rooms/${CODE}/meta`, {
+    as: P2,
+    method: 'PATCH',
+    body: { mode: 'both', roundCount: 50 },
+  });
+  assert.ok(DENIED(r), `a player changed the settings: ${r.status} ${r.text}`);
+});
+
+test('plannedRounds must be a non-negative number', async () => {
+  await seed();
+  for (const bad of ['"six"', -1]) {
+    const r = await write(`rooms/${CODE}/meta/plannedRounds`, HOST, JSON.parse(String(bad)));
+    assert.ok(DENIED(r), `plannedRounds accepted ${bad}: ${r.status} ${r.text}`);
+  }
 });
 
 // --- kicking players -------------------------------------------------------

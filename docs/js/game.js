@@ -44,6 +44,46 @@ function pluralise(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
+/**
+ * The uid somebody guessed, from either vote shape.
+ *
+ * A vote used to be a bare uid string. Placement scoring needs to know WHEN it was cast, so
+ * it is now `{ guess, at }` — but the old shape stays readable forever, because a phone can
+ * be holding a cached copy of the old play.js and still be writing strings after the rules
+ * and the site have moved on. Everything that reads a vote goes through here rather than
+ * touching the value directly.
+ *
+ * DEPLOY ORDER: rules FIRST, then the site. The rules accepting both shapes covers new
+ * rules + old site; it cannot cover old rules + new site, because `isString` rejects the
+ * object outright and every vote in the room fails. See README.
+ *
+ * Returns '' for anything unusable, which every caller already treats as "has not voted".
+ */
+export function guessOf(vote) {
+  if (typeof vote === 'string') return vote;
+  if (vote && typeof vote === 'object' && typeof vote.guess === 'string') return vote.guess;
+  return '';
+}
+
+/**
+ * When a vote was cast, as a server-clock millisecond stamp, or Infinity if unknown.
+ *
+ * Infinity — not 0 — because an unknown time must sort LAST. A vote in the old shape has no
+ * timestamp, and treating that as "very early" would hand the top of the ladder to whoever
+ * voted before the upgrade landed.
+ */
+function voteTimeOf(vote) {
+  const at = vote && typeof vote === 'object' ? vote.at : null;
+  return typeof at === 'number' && Number.isFinite(at) ? at : Infinity;
+}
+
+/** 1 -> '1st'. Presentation, but pure, and both screens need exactly this. */
+export function ordinal(n) {
+  const s = ['th', 'st', 'nd', 'rd'];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
 // ===========================================================================
 // ROUND GENERATION
 // ===========================================================================
@@ -197,23 +237,71 @@ export function generateRounds({ pools, roundCount } = {}, rng = Math.random) {
 // ===========================================================================
 
 /**
- * +1 per voter whose guess equals the owner. The owner never scores this round,
- * so if their uid somehow appears in `votes` it is ignored.
+ * PLACEMENT SCORING. A wrong guess is worth nothing; a correct one is worth more the
+ * sooner it came in.
  *
- * @param {Record<string,string>} votes - { voterUid: guessedUid }
+ * Correct voters are ranked against EACH OTHER, not against everyone who voted. Being slow
+ * costs nothing if the people ahead of you were wrong, so the reward is for knowing the
+ * answer quickly rather than for tapping quickly — which matters, because the video has to
+ * be watched before anybody can sensibly answer.
+ *
+ * The ladder is sized by how many people COULD have voted, not by how many were right:
+ *
+ *   1st correct -> eligible voters, 2nd -> one less, ... floored at 1.
+ *
+ * Sizing it by the number of correct voters instead would mean the only person to get a
+ * hard round right scored 1 — the minimum — while the first of five on an easy round scored
+ * 5. Hard rounds should not pay less. To switch to that behaviour, `ladderTop` below
+ * becomes `correctEntries.length`.
+ *
+ * The owner never scores their own round, so if their uid somehow appears in `votes` it is
+ * ignored.
+ *
+ * @param {Record<string, string | {guess: string, at: number}>} votes - { voterUid: vote }
  * @param {string} ownerUid
- * @returns {{ correct: string[], incorrect: string[] }}
+ * @param {string[]} [playerUids] - everyone in the room, to size the ladder. Omit and the
+ *   ladder falls back to the number of correct voters.
+ * @returns {{
+ *   correct: string[],
+ *   incorrect: string[],
+ *   awards: Array<{uid: string, place: number, points: number}>,
+ *   points: Record<string, number>
+ * }}
  */
-export function scoreRound(votes, ownerUid) {
-  const correct = [];
-  const incorrect = [];
+export function scoreRound(votes, ownerUid, playerUids = null) {
   const safeVotes = votes && typeof votes === 'object' ? votes : {};
+  const correctEntries = [];
+  const incorrect = [];
+
   for (const voterUid of Object.keys(safeVotes)) {
     if (voterUid === ownerUid) continue;
-    if (safeVotes[voterUid] === ownerUid) correct.push(voterUid);
+    const vote = safeVotes[voterUid];
+    if (guessOf(vote) === ownerUid) correctEntries.push({ uid: voterUid, at: voteTimeOf(vote) });
     else incorrect.push(voterUid);
   }
-  return { correct, incorrect };
+
+  // Earliest first. The uid tiebreak is not cosmetic: two votes CAN share a millisecond,
+  // and the host screen, every phone and the awarded points all have to agree on who came
+  // first. Sorting by time alone leaves that to whatever order the keys arrived in.
+  correctEntries.sort((a, b) => {
+    if (a.at !== b.at) return a.at - b.at;
+    return a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0;
+  });
+
+  const eligibleCount = playerUids ? voteProgress(playerUids, ownerUid, safeVotes).eligible.length : 0;
+  const ladderTop = Math.max(eligibleCount, correctEntries.length);
+
+  const awards = correctEntries.map((entry, i) => ({
+    uid: entry.uid,
+    place: i + 1,
+    // Floored at 1 so a correct answer is never worth nothing, however many people voted.
+    points: Math.max(1, ladderTop - i),
+  }));
+
+  const points = {};
+  for (const a of awards) points[a.uid] = a.points;
+
+  return { correct: correctEntries.map((e) => e.uid), incorrect, awards, points };
 }
 
 /**
@@ -240,8 +328,10 @@ export function voteProgress(playerUids, ownerUid, votes) {
   const voted = [];
   const pending = [];
   for (const uid of eligible) {
-    const v = safeVotes[uid];
-    if (typeof v === 'string' && v) voted.push(uid);
+    // guessOf, not a typeof check: a vote is `{guess, at}` now, and reading the raw value
+    // would count every placement-scored vote as "has not voted" — the round would never
+    // lock and the host would be pressing Reveal every single time.
+    if (guessOf(safeVotes[uid])) voted.push(uid);
     else pending.push(uid);
   }
 

@@ -34,8 +34,13 @@ export const TTL_MS = 24 * 60 * 60 * 1000;
  *   v3: fetch pool deepened to 1000 before sampling
  *   v4: every mode targets 100; 'both' backfills past the 50/50 split when one source is
  *       short or unavailable; likes recency window dropped (uniform over all history)
+ *   v5: 'both' collects reposts FIRST and excludes them from the likes pass, so the two
+ *       sources are disjoint at fetch time rather than at merge time. Reposting a video
+ *       and liking it is normal, so v4 entries spent the likes budget on ids that were
+ *       then discarded — a v5 pool for the same account is larger and its `sources`
+ *       breakdown sums to the total.
  */
-export const CACHE_VERSION = 4;
+export const CACHE_VERSION = 5;
 
 /** Filesystem-safe filename for a `handle:mode` key. Handles are already validated
  *  to [A-Za-z0-9._] upstream, but sanitise anyway so a bad key can never escape the dir. */

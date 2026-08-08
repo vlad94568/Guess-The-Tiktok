@@ -6,7 +6,7 @@
 
 import { authReady } from './firebase.js';
 import * as db from './db.js';
-import { generateRounds, scoreRound, voteProgress, leaderboard } from './game.js';
+import { generateRounds, scoreRound, voteProgress, leaderboard, guessOf, ordinal } from './game.js';
 import { watchUrl } from './video-link.js';
 import { renderQR } from './qr.js';
 import { ping, unlockAudio } from './sound.js';
@@ -101,13 +101,43 @@ async function scraperHealth() {
   }
 }
 
+/**
+ * Backstop for a WEDGED helper — deliberately well above what a slow scrape costs.
+ *
+ * It must not compete with the scraper's own budget, because aborting here does NOT stop
+ * the server: the request keeps running to completion, writes its cache, and holds the
+ * one-at-a-time queue while every remaining player waits behind work that has already been
+ * discarded. The player whose scrape was abandoned is marked `timeout` and drops out of the
+ * game with no videos — then the retry hits the warm cache and succeeds instantly, so the
+ * fault looks like it fixed itself.
+ *
+ * The scraper's own worst case, from LIMITS in scraper/tiktok.mjs, for one player in 'both':
+ *
+ *   3s   inter-profile throttle   (MAX_GAP_MS)
+ *   40s  profile goto             (PROFILE_GOTO_TIMEOUT_MS)
+ *   5s   hydration settle         (HYDRATION_SETTLE_MS)
+ *   8s   template donor wait      (TEMPLATE_WAIT_MS)
+ *   30s  reposts pagination       (PAGINATION_BUDGET_MS)
+ *   30s  likes pagination         (PAGINATION_BUDGET_MS again — 'both' runs them serially)
+ *   ---
+ *   116s
+ *
+ * That left 4s of headroom against the old 120s, and 'both' now spends the full likes
+ * budget far more often than it used to: excluding already-collected reposts means
+ * duplicates no longer count towards MAX_FETCH, so a heavy reposter keeps paging instead of
+ * filling up early on ids that were about to be thrown away.
+ *
+ * RAISE THIS if PAGINATION_BUDGET_MS or any of the other limits above go up.
+ */
+const SCRAPE_TIMEOUT_MS = 180_000;
+
 async function scrape(handle, mode) {
   try {
     const r = await fetch(`${SCRAPER}/scrape`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ handle, mode }),
-      signal: AbortSignal.timeout(120000),
+      signal: AbortSignal.timeout(SCRAPE_TIMEOUT_MS),
     });
     if (!r.ok) return { ok: false, error: 'scrape_failed' };
     return await r.json();
@@ -152,10 +182,15 @@ async function createRoom() {
   throw new Error('Could not allocate a free room code.');
 }
 
-/** Mode/round-count edits in the lobby rewrite meta, so the players see them too. */
+/**
+ * Mode/round-count edits in the lobby patch meta, so the players see them too.
+ *
+ * A PATCH, not a re-create: see db.updateSettings for why replacing the whole meta node
+ * here used to take hostOnline and createdAt with it.
+ */
 async function pushSettings() {
   if (!S.code || S.meta?.status !== 'lobby') return;
-  await db.createRoom(S.code, S.uid, {
+  await db.updateSettings(S.code, {
     mode: document.querySelector('input[name="mode"]:checked').value,
     roundCount: Number($('round-count').value),
   });
@@ -378,18 +413,33 @@ async function lockAndReveal() {
   // every host tab and reconnect, so points cannot be awarded twice.
   if (await db.claimScoring(S.code, S.round)) {
     const votes = await db.getVotes(S.code, S.round);
-    const { correct } = scoreRound(votes, S.roundPlan.ownerUid);
-    for (const uid of correct) await db.incrementScore(S.code, uid);
+    // The room roster sizes the placement ladder — see scoreRound. Read the votes back
+    // from the database rather than using S.votes: this is the tally that pays out, and it
+    // must be the server's copy, not whatever this tab last happened to receive.
+    const { awards } = scoreRound(votes, S.roundPlan.ownerUid, Object.keys(S.players));
+    for (const a of awards) await db.addScore(S.code, a.uid, a.points);
   }
   await db.setRoundPhase(S.code, S.round, 'reveal');
 }
 
 /**
- * How many rounds the stored plan actually holds.
+ * How many rounds the stored plan holds, for a host that reloaded mid-game and has no
+ * S.totalRounds. meta.roundCount is the REQUESTED count, which the equal-share rounding
+ * may have moved in either direction, so it is never the answer.
  *
- * A host that reloads mid-game has no S.totalRounds, and meta.roundCount is the REQUESTED
- * count, which the equal-share rounding may have moved either way. The plan itself is the
- * only truth, so probe it. Bounded, and only ever runs once per page load.
+ * meta.plannedRounds is written next to the plan and is one value we already have from the
+ * meta subscription. The probe below is the fallback for rooms created before that field
+ * existed — a game in progress across the upgrade still has to be able to say "of N".
+ */
+async function resolveTotalRounds() {
+  const planned = Number(S.meta?.plannedRounds);
+  if (Number.isFinite(planned) && planned > 0) return planned;
+  return countPlannedRounds();
+}
+
+/**
+ * Fallback only. One sequential get() per round until one comes back empty, which is why
+ * it is not the primary path. Bounded, and only ever runs once per page load.
  */
 async function countPlannedRounds() {
   // The plan can be LONGER than meta.roundCount — with more players than requested rounds
@@ -466,7 +516,19 @@ function renderPlaying() {
   // is still loading, so the button cannot open the round that just ended.
   $('watch-link').href = S.roundPlan ? watchUrl(S.roundPlan.videoId) : '#';
 
-  const prog = voteProgress(Object.keys(S.players), S.roundPlan?.ownerUid, S.votes);
+  // The tally is meaningless until the plan for THIS round has arrived. Without the owner,
+  // voteProgress counts them as an eligible voter, so a 5-player room flashes "0 of 5"
+  // before settling on the correct "0 of 4". Show placeholders instead of a wrong number —
+  // this is the big screen, and people read it.
+  if (!S.roundPlan) {
+    $('voted-count').textContent = '–';
+    $('voted-total').textContent = '–';
+    $('pending-count').textContent = 'Loading the round…';
+    $('pending-count').classList.remove('ok');
+    return;
+  }
+
+  const prog = voteProgress(Object.keys(S.players), S.roundPlan.ownerUid, S.votes);
   $('voted-count').textContent = prog.voted.length;
   $('voted-total').textContent = prog.eligible.length;
   // Counts, never names — see the comment on this block in host.html. The owner is not
@@ -486,16 +548,29 @@ function renderReveal() {
   $('reveal-owner').textContent = S.players[ownerUid]?.name ?? '???';
   if (S.roundPlan) $('reveal-watch-link').href = watchUrl(S.roundPlan.videoId);
 
+  // Recomputed rather than remembered from lockAndReveal, so a host that reloads on the
+  // reveal screen shows the same places and points that were actually awarded. scoreRound
+  // is pure and deterministic (the uid tiebreak is what makes it so), and it is being fed
+  // the same votes, so it cannot disagree with what was paid out.
+  const { awards, incorrect } = scoreRound(S.votes, ownerUid, Object.keys(S.players));
+
+  // Correct answers in the order they landed — that ordering IS the scoring now, so it is
+  // what the big screen should show. Wrong answers follow.
+  const rows = [
+    ...awards.map((a) => ({ voter: a.uid, guess: ownerUid, place: a.place, points: a.points })),
+    ...incorrect.map((uid) => ({ voter: uid, guess: guessOf(S.votes[uid]), place: null, points: 0 })),
+  ];
+
   $('reveal-votes').innerHTML =
-    Object.entries(S.votes)
-      .map(([voter, guess]) => {
-        const ok = guess === ownerUid;
-        return (
-          `<li><span>${esc(S.players[voter]?.name)} said <strong>${esc(S.players[guess]?.name)}</strong></span>` +
-          (ok ? '<span class="ok">✓ +1</span>' : '<span class="bad">✗</span>') +
+    rows
+      .map(
+        (r) =>
+          `<li><span>${esc(S.players[r.voter]?.name)} said <strong>${esc(S.players[r.guess]?.name)}</strong></span>` +
+          (r.place !== null
+            ? `<span class="ok">✓ ${esc(ordinal(r.place))} +${r.points}</span>`
+            : '<span class="bad">✗</span>') +
           `</li>`
-        );
-      })
+      )
       .join('') || '<li class="muted">Nobody voted.</li>';
 
   $('reveal-board').innerHTML = boardHtml();
@@ -728,8 +803,8 @@ async function sweepMyOldRooms() {
       S.round = i;
       S.roundPlan = await db.getRound(S.code, i);
     }
-    // Reload recovery: this page did not build the plan, so it has to measure it.
-    if (S.totalRounds === null) S.totalRounds = await countPlannedRounds();
+    // Reload recovery: this page did not build the plan, so it has to look the length up.
+    if (S.totalRounds === null) S.totalRounds = await resolveTotalRounds();
     watchRound(i);
     render();
   });
@@ -754,7 +829,14 @@ async function sweepMyOldRooms() {
     try {
       await buildPools();
     } catch (e) {
-      fatal(`Could not build pools: ${e.message}`);
+      // buildPools flips the room to 'loading' before it does anything else, so a throw
+      // anywhere inside it (a denied write, a dropped connection) used to leave the room
+      // stuck on the loading screen with a disabled Start button and no way back short of
+      // a reload. Put it back in the lobby: rendering the lobby re-enables Start via
+      // refreshStartButton, so the host can simply try again.
+      fatal(`Could not build pools: ${e.message} — put back in the lobby, you can try again.`);
+      await db.setStatus(S.code, 'lobby').catch((e2) => console.warn('could not return to lobby:', e2.message));
+      refreshStartButton();
     }
   });
 

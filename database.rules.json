@@ -19,6 +19,7 @@
           "hostOnline": { ".validate": "newData.isBoolean()" },
           "createdAt": { ".validate": "newData.val() === now || data.val() === newData.val()" },
           "status": { ".validate": "newData.val() === 'lobby' || newData.val() === 'loading' || newData.val() === 'playing' || newData.val() === 'finished'" },
+          "plannedRounds": { ".validate": "newData.isNumber() && newData.val() >= 0" },
           "$other": { ".validate": false }
         },
 
@@ -115,7 +116,10 @@
               "$voterUid": {
                 ".read": "auth != null && auth.uid === $voterUid",
                 ".write": "auth != null && auth.uid === $voterUid && !data.exists() && root.child('rooms').child($code).child('rounds').child($i).child('phase').val() === 'playing' && root.child('rooms').child($code).child('rounds').child($i).child('ownerUid').val() !== auth.uid && root.child('rooms').child($code).child('meta').child('createdAt').val() + 43200000 > now",
-                ".validate": "newData.isString() && newData.val() !== auth.uid && root.child('rooms').child($code).child('players').child(newData.val()).exists()"
+                ".validate": "(newData.isString() && newData.val() !== auth.uid && root.child('rooms').child($code).child('players').child(newData.val()).exists()) || newData.hasChildren(['guess', 'at'])",
+                "guess": { ".validate": "newData.isString() && newData.val() !== auth.uid && root.child('rooms').child($code).child('players').child(newData.val()).exists()" },
+                "at": { ".validate": "newData.val() === now" },
+                "$other": { ".validate": false }
               }
             },
 

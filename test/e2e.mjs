@@ -228,9 +228,20 @@ check(/[✓✗]/.test(votesList), 'each guess marked correct/incorrect');
 await host.page.screenshot({ path: 'test/out/4-reveal.png' });
 
 for (const [i, p] of players.entries()) {
+  const sat = i === sitOutIdx;
+  // The verdict paints as soon as ownerUid lands, but the POINTS need the votes node,
+  // which arrives on a second subscription attached at the same moment. Reading straight
+  // away races that and sees a pointless "Correct!". Wait for the settled text.
+  if (!sat) {
+    await p.page
+      .waitForFunction(() => {
+        const t = document.getElementById('reveal-msg')?.textContent || '';
+        return /\+\d+/.test(t) || /nope|slow/i.test(t);
+      }, { timeout: 15000 })
+      .catch(() => {}); // fall through to the assertions, which report better than a throw
+  }
   const msg = await text(p.page, '#reveal-msg');
   const sub = await text(p.page, '#reveal-sub');
-  const sat = i === sitOutIdx;
   log(`  Player${i + 1} sees: "${msg}" / "${sub}"`);
 
   // Assert the ACTUAL outcome, not merely that some text exists. The previous
@@ -242,7 +253,15 @@ for (const [i, p] of players.entries()) {
     check(/yours/i.test(msg), `p${i + 1} (owner) told it was theirs`);
   } else {
     check(/correct|nope|slow/i.test(msg), `p${i + 1} got a real verdict`);
-    check(/^It was .+\./.test(sub), `p${i + 1} was told who it actually was`);
+    // Not anchored to the start any more: a correct answer now leads with the placement
+    // ("2nd to get it — it was Bob."), since how quickly you answered is what it scored.
+    check(/it was .+\./i.test(sub), `p${i + 1} was told who it actually was`);
+    // A correct verdict has to state what it was worth, or placement scoring is invisible
+    // to the person it just paid.
+    if (/correct/i.test(msg)) {
+      check(/\+\d+/.test(msg), `p${i + 1} was told how many points they got: "${msg}"`);
+      check(/\d(st|nd|rd|th) to get it/i.test(sub), `p${i + 1} was told their place: "${sub}"`);
+    }
     check(new RegExp(owner.trim()).test(sub), `p${i + 1} named the same owner as the host`);
   }
 }

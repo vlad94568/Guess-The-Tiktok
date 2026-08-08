@@ -121,6 +121,11 @@ const LIMITS = {
   // A page is ~30 ids and costs ~0.6s including the polite delay, so 1000 ids is ~34
   // pages ≈ 20s per source. This budget is the real limit on depth: whatever has been
   // collected when it expires is what gets sampled.
+  //
+  // COUNTED TWICE in 'both', which runs the two sources one after the other. Everything in
+  // this block adds up to the worst case for a single player, and docs/js/host.js sizes its
+  // client-side abort (SCRAPE_TIMEOUT_MS) off that sum — raise anything here and raise that
+  // too, or the host abandons a scrape the server then finishes and caches anyway.
   PAGINATION_BUDGET_MS: 30_000,
   PAGE_SIZE: 30, // what TikTok's own client asks for
   MAX_PAGES: 40, // 40 * 30 = 1200, comfortably above MAX_FETCH
@@ -375,15 +380,24 @@ async function openProfile(ctx, handle) {
  * which meant an account that has been quiet for a year served up the same handful of
  * old videos every game instead of a random draw from all of them.
  *
- * @returns {Promise<{ids: string[], deadRoute: boolean, pages: object[]}>}
+ * `exclude` is a list of ids already claimed by an earlier source for the SAME player.
+ * Filtering here rather than at merge time matters: MAX_FETCH and the time budget count
+ * only ids we KEEP, so a player who likes everything they repost keeps paging until it
+ * finds genuinely new videos instead of spending the whole budget on ids that are about
+ * to be discarded. See collectLikes for why reposts always go first.
+ *
+ * @returns {Promise<{ids: string[], deadRoute: boolean, pages: object[], skipped: number}>}
  */
-async function paginate(page, route, template, secUid) {
+async function paginate(page, route, template, secUid, exclude = []) {
   return page.evaluate(
-    async ({ origin, route, template, secUid, limits, fields }) => {
+    async ({ origin, route, template, secUid, limits, fields, exclude }) => {
       const ids = [];
+      const claimed = new Set(exclude); // ids a previous source already took
+      const seen = new Set(exclude); // claimed + everything taken this pass
       const pages = [];
       let cursor = '0';
       let deadRoute = false;
+      let skipped = 0; // dropped because a previous source already had them
       const started = Date.now();
 
       for (let i = 0; i < limits.MAX_PAGES; i++) {
@@ -415,14 +429,23 @@ async function paginate(page, route, template, secUid) {
         }
 
         const items = body?.[fields.ITEM_LIST] || [];
+        let fresh = 0;
         for (const it of items) {
           const id = it?.[fields.ITEM_ID];
-          if (id && !ids.includes(id)) ids.push(id);
+          if (!id) continue;
+          if (seen.has(id)) {
+            if (claimed.has(id)) skipped++;
+            continue;
+          }
+          seen.add(id);
+          ids.push(id);
+          fresh++;
         }
 
         pages.push({
           page: i,
           got: items.length,
+          fresh,
           cursor,
           nextCursor: body?.[fields.CURSOR],
           hasMore: body?.[fields.HAS_MORE],
@@ -439,9 +462,9 @@ async function paginate(page, route, template, secUid) {
         await new Promise((r) => setTimeout(r, limits.INTER_PAGE_DELAY_MS));
       }
 
-      return { ids: ids.slice(0, limits.MAX_FETCH), deadRoute, pages };
+      return { ids: ids.slice(0, limits.MAX_FETCH), deadRoute, pages, skipped };
     },
-    { origin: ROUTES.ORIGIN, route, template, secUid, limits: LIMITS, fields: RESPONSE_FIELDS }
+    { origin: ROUTES.ORIGIN, route, template, secUid, limits: LIMITS, fields: RESPONSE_FIELDS, exclude }
   );
 }
 
@@ -518,8 +541,16 @@ async function collectReposts(page, info, template) {
   return ids;
 }
 
-/** EVERY like we can reach, unsampled. Same contract as collectReposts. */
-async function collectLikes(page, info, template) {
+/**
+ * EVERY like we can reach, unsampled. Same contract as collectReposts.
+ *
+ * `exclude` is this player's already-collected repost ids. Reposting a video and liking
+ * it is the normal thing to do on TikTok, so the two lists overlap heavily and the raw
+ * union is much smaller than reposts+likes suggests. Excluding here (rather than only at
+ * merge time) means the budget is spent finding videos this pool does not already have.
+ * `stats.overlap` reports how many were dropped, for the operator console.
+ */
+async function collectLikes(page, info, template, exclude = [], stats = {}) {
   // NON-NEGOTIABLE: check openFavorite BEFORE calling the endpoint.
   // VERIFIED 2026-08-01: with private likes the endpoint returns HTTP 200,
   // statusCode 0, hasMore true and an EMPTY itemList — byte-identical to a user
@@ -535,12 +566,17 @@ async function collectLikes(page, info, template) {
   // recent like is from 2023: the window matched exactly one page, so the "random 50"
   // was in fact the same 30 old videos every single game. Drawing from everything is
   // both fairer and one pagination pass cheaper.
-  const { ids } = await paginate(page, ROUTES.LIKES, template, info.secUid);
+  const { ids, skipped } = await paginate(page, ROUTES.LIKES, template, info.secUid, exclude);
+  stats.overlap = skipped;
   return ids;
 }
 
 /**
  * Merge two source pools into one final list of at most `max` ids, at random.
+ *
+ * The `seen` set is defence in depth: in 'both' mode collectLikes already excludes the
+ * repost ids, so the pools arrive disjoint. Keep the check anyway — it is what makes this
+ * function safe to call with pools from any source, and the cost is nil.
  *
  * Take up to `perSource` from each pool first so neither source can crowd the other out,
  * then top the result up to `max` from whatever ids are left over in EITHER pool. That
@@ -624,8 +660,20 @@ export async function scrape({ handle, mode }) {
       // Run the halves SEQUENTIALLY, not with Promise.all: they share one page and
       // firing both pagination loops at once doubles the instantaneous request rate
       // against TikTok, which is exactly what the delays elsewhere exist to avoid.
+      //
+      // Order is load-bearing, not incidental. People who repost a video usually like it
+      // too, so the same id shows up in both lists. Reposts run FIRST and their ids are
+      // handed to the likes pass as an exclusion set, so likes only ever contributes
+      // videos the pool does not already have. Without that, the likes half spends its
+      // budget on ids that mergePools throws away, and a heavy reposter ends up with a
+      // pool well short of MAX_VIDEOS.
       const reposts = await collectReposts(page, info, template).catch((e) => e);
-      const likes = await collectLikes(page, info, template).catch((e) => e);
+      const repostIds = Array.isArray(reposts) ? reposts : [];
+      const likeStats = {};
+      const likes = await collectLikes(page, info, template, repostIds, likeStats).catch((e) => e);
+      if (likeStats.overlap) {
+        console.log(`[scrape]   likes overlapping reposts, skipped: ${likeStats.overlap}`);
+      }
       const results = [reposts, likes];
       const ok = results.filter((r) => Array.isArray(r));
       if (ok.length === 0) {
@@ -634,12 +682,15 @@ export async function scrape({ handle, mode }) {
         throw new ScrapeError(codes.find((c) => c !== ERRORS.NO_VIDEOS) || codes[0] || ERRORS.NO_VIDEOS);
       }
 
-      const repostPool = Array.isArray(reposts) ? reposts : [];
+      const repostPool = repostIds;
       const likePool = Array.isArray(likes) ? likes : [];
       videos = mergePools([repostPool, likePool], LIMITS.PER_SOURCE_VIDEOS, LIMITS.MAX_VIDEOS);
 
       // Report what each source CONTRIBUTED to the final list, not how much it fetched —
-      // the loading screen is there to show that 'both' really was both.
+      // the loading screen is there to show that 'both' really was both. These two now
+      // sum to videos.length because the pools are disjoint by construction; when likes
+      // were collected without the repost exclusion, a video in both lists was counted
+      // twice here and the breakdown added up to more than the total shown next to it.
       const kept = new Set(videos);
       sources.reposts = Array.isArray(reposts)
         ? repostPool.filter((id) => kept.has(id)).length

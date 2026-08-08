@@ -84,6 +84,18 @@ export async function createRoom(code, hostUid, { mode, roundCount }) {
   });
 }
 
+/**
+ * Lobby-only edit of the two settings the host can change after the room exists.
+ *
+ * MUST be an update(), never createRoom() again. createRoom() is a set() of the whole meta
+ * node, so re-running it to change `mode` also DELETED `hostOnline` — leaving every phone
+ * unable to tell that the host had gone — and rewrote `createdAt` to now, sliding the 12h
+ * window every rule is bounded by. The meta `.validate` requires hasChildren([...]), which
+ * an update() satisfies because the rule sees the merged node, not just the patch.
+ */
+export const updateSettings = (code, { mode, roundCount }) =>
+  update(ref(db, P.meta(code)), { mode, roundCount });
+
 export const watchMeta = (code, cb) => sub(P.meta(code), cb);
 export const getMeta = async (code) => (await get(ref(db, P.meta(code)))).val();
 
@@ -145,7 +157,10 @@ export const cancelRoomDeleteOnDisconnect = (code) => onDisconnect(ref(db, P.roo
 
 /** Host-side reset for "New Game": clears rounds+pool, keeps players, zeroes scores. */
 export async function resetRoom(code, playerUids) {
-  const patch = { rounds: null, pool: null, currentRound: null };
+  // meta/plannedRounds describes the plan that is being deleted, so it goes with it —
+  // otherwise a host who reloads between the reset and the next Start reads a length for
+  // rounds that no longer exist.
+  const patch = { rounds: null, pool: null, currentRound: null, 'meta/plannedRounds': null };
   await update(ref(db, P.room(code)), patch);
   await Promise.all(playerUids.map((uid) => set(ref(db, P.playerScore(code, uid)), 0)));
   await setStatus(code, 'lobby');
@@ -206,9 +221,14 @@ export const watchBanned = (code, cb) => sub(P.banned(code), (v) => cb(v || {}))
 export const isBanned = async (code, uid) =>
   (await get(ref(db, P.bannedUser(code, uid)))).val() === true;
 
-/** Host-only: +1 atomically, so a re-render or reconnect cannot double-count. */
-export const incrementScore = (code, uid) =>
-  runTransaction(ref(db, P.playerScore(code, uid)), (cur) => (cur || 0) + 1);
+/**
+ * Host-only: add points atomically, so a re-render or reconnect cannot double-count.
+ *
+ * Takes an amount rather than always adding 1: placement scoring pays by how quickly a
+ * correct answer came in, so a round can award 5 to one player and 2 to another.
+ */
+export const addScore = (code, uid, points) =>
+  runTransaction(ref(db, P.playerScore(code, uid)), (cur) => (cur || 0) + points);
 
 // ===========================================================================
 // POOL
@@ -250,6 +270,21 @@ export async function readPools(code) {
  * answer is unreadable even though it is already in the database. Persisting the plan
  * (rather than keeping it in a host-page variable) is what lets a host that reloads or
  * reconnects mid-game pick up exactly where it left off.
+ *
+ * `meta/plannedRounds` is written alongside it and is the ONLY cheap way to learn how long
+ * the game is. meta.roundCount is what was REQUESTED, and game.js rounds that to a multiple
+ * of the player count in either direction, so it cannot be trusted for "Round 3 of N". The
+ * length went in meta rather than being counted because a reloading host otherwise has to
+ * probe rounds/0, rounds/1, ... one sequential get() at a time until one comes back empty.
+ *
+ * Written AFTER the rounds themselves: a reader that sees plannedRounds must find the plan
+ * already there, never the other way round.
+ *
+ * The meta write is deliberately NON-FATAL. `meta/$other: false` means rules that predate
+ * this field reject it outright, so a site deployed before the rules are published would
+ * fail here and take the whole game start down with it. Losing the field only costs a
+ * reloading host one round-probing loop (see resolveTotalRounds in host.js), which is a
+ * fallback that has to exist anyway for rooms created before the field did.
  */
 export async function writePlan(code, rounds) {
   const obj = {};
@@ -257,6 +292,9 @@ export async function writePlan(code, rounds) {
     obj[i] = { videoId: r.videoId, ownerUid: r.ownerUid };
   });
   await set(ref(db, `rooms/${code}/rounds`), obj);
+  await update(ref(db, P.meta(code)), { plannedRounds: rounds.length }).catch((e) =>
+    console.warn('could not record plannedRounds (old rules deployed?):', e.message)
+  );
 }
 
 export const getRound = async (code, i) => (await get(ref(db, P.round(code, i)))).val();
@@ -293,9 +331,21 @@ export const getVotes = async (code, i) => (await get(ref(db, P.roundVotes(code,
 /** A player may read back only their own vote, at any phase. */
 export const watchMyVote = (code, i, uid, cb) => sub(P.roundVote(code, i, uid), cb);
 
-/** Player action. Rules reject: a second vote, a vote outside 'playing', a self-vote,
- *  a vote by the round owner, and a vote written into someone else's slot. */
-export const castVote = (code, i, uid, guessUid) => set(ref(db, P.roundVote(code, i, uid)), guessUid);
+/**
+ * Player action. Rules reject: a second vote, a vote outside 'playing', a self-vote,
+ * a vote by the round owner, and a vote written into someone else's slot.
+ *
+ * `at` is what placement scoring ranks on, and it MUST be the server's clock. A phone's
+ * clock can be wrong by minutes, and a player editing the payload could simply claim to
+ * have answered first. The rules pin it with `newData.val() === now`, the same clause that
+ * protects `joinedAt` and `createdAt`, so the value cannot be anything but the moment the
+ * write was evaluated on the server.
+ *
+ * One write, not two. Splitting the guess and the timestamp would let a phone land the
+ * guess and drop the timestamp — and leave the round half-voted if it died in between.
+ */
+export const castVote = (code, i, uid, guessUid) =>
+  set(ref(db, P.roundVote(code, i, uid)), { guess: guessUid, at: serverTimestamp() });
 
 // --- double-scoring guard --------------------------------------------------
 /**

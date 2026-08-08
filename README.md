@@ -120,14 +120,21 @@ decoder, because a subtly wrong QR still renders as a plausible-looking square.
 cd scraper && npm install && npm start
 ```
 
-Then open `http://localhost:8787/host.html`. To pin the CORS allowlist to your own origin
-instead of the default any-`*.github.io` pattern:
+Then open `http://localhost:8787/host.html`.
+
+The CORS allowlist is `localhost` plus **exactly one** public origin, which defaults to
+`https://vlad94568.github.io`. If you forked this to your own GitHub Pages account, point it
+at yours:
 
 ```bash
-cd scraper && GH_PAGES_ORIGIN=https://vlad94568.github.io npm start
+cd scraper && GH_PAGES_ORIGIN=https://<your-user>.github.io npm start
 ```
 
-On Windows PowerShell: `$env:GH_PAGES_ORIGIN='https://vlad94568.github.io'; npm start`.
+On Windows PowerShell: `$env:GH_PAGES_ORIGIN='https://<your-user>.github.io'; npm start`.
+
+There is deliberately no wildcard option. `github.io` gives a subdomain to anyone, so a
+`*.github.io` allowlist would let any page on any GitHub Pages site call `/scrape` on your
+machine while the helper is running.
 </details>
 
 ### One server, not two
@@ -162,6 +169,25 @@ list from disk — see "What is stored, and when it goes away".
    failure reasons appear on the host screen.
 4. Each round: the video plays on the host screen, players vote on their phones, host clicks
    **Next Round**.
+
+### Scoring
+
+A wrong guess is worth nothing. A correct one is worth more the sooner it lands:
+
+| | |
+|---|---|
+| 1st correct | one point per eligible voter (the room minus the round's owner) |
+| each one after | one point less, down to a minimum of 1 |
+| wrong, or no vote | 0 |
+
+Correct answers are ranked **against each other**, not against everyone who voted — being slow
+costs nothing if the people ahead of you were wrong, so the reward is for knowing the answer
+quickly rather than for tapping quickly. That also means a round only one person gets right pays
+that person the maximum, rather than punishing them for the round being hard.
+
+Order comes from a server timestamp on each vote, so a phone with a wrong clock (or a player
+editing the payload) cannot claim first place. Ties break on uid, so the host screen, every phone
+and the points actually awarded always agree.
 
 ## Hosting topology
 
@@ -239,6 +265,12 @@ afterwards. `.validate` pins `mode` and `status` to their legal values, bounds `
 `timerSecs`, and forces `code` to equal the key — so a room cannot lie about its own id.
 `$other: false` rejects unknown fields anywhere in `meta`.
 
+`plannedRounds` is written next to the round plan and is how long the game ACTUALLY is —
+`roundCount` is only what was requested, which `generateRounds` rounds to a multiple of the
+player count in either direction. Because `$other: false` would reject the field under older
+rules, the host writes it best-effort and falls back to probing `rounds/0, rounds/1, …` when
+it is absent, so either deploy order is safe.
+
 **The 12-hour clause.** Every write path carries
 `meta/createdAt + 43200000 > now`, so abandoned rooms become read-only and die. `createdAt`
 itself is validated as `newData.val() === now`, meaning it must be written with the server
@@ -290,8 +322,19 @@ Vote writes are the tightest rule in the file. `votes/$voterUid` is writable onl
   the secret without leaking it;
 - the room is under 12 hours old.
 
-And `.validate` requires the vote to be a string naming a player who actually exists in the room,
-and rejects `newData.val() === auth.uid` — no voting for yourself.
+And `.validate` requires the guessed uid to name a player who actually exists in the room, and
+rejects a guess equal to `auth.uid` — no voting for yourself.
+
+A vote is `{ guess, at }`. `at` is pinned with `newData.val() === now`, the same clause that
+protects `createdAt` and `joinedAt`, which is what makes **placement scoring** unforgeable: a
+phone cannot claim to have answered earlier than it did, so it cannot buy itself first place.
+
+The bare-string shape (a uid with no timestamp) is still accepted. That covers new rules running
+against an old site — a phone holding a cached `play.js`, or Pages not yet redeployed — and such
+a vote simply sorts last. It does **not** work the other way round:
+
+> ⚠️ **Publish the rules BEFORE deploying the site.** Old rules validate a vote as `isString`, so
+> a new site writing `{guess, at}` has every vote rejected and the game cannot be played at all.
 
 **`currentRound`** — readable by all, writable by host only.
 

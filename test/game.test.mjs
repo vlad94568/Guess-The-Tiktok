@@ -488,15 +488,132 @@ test('scoreRound ignores the owner even if a vote somehow landed in their slot',
 });
 
 test('scoreRound handles no votes and missing vote objects', () => {
-  assert.deepEqual(scoreRound({}, 'alice'), { correct: [], incorrect: [] });
-  assert.deepEqual(scoreRound(null, 'alice'), { correct: [], incorrect: [] });
-  assert.deepEqual(scoreRound(undefined, 'alice'), { correct: [], incorrect: [] });
+  const empty = { correct: [], incorrect: [], awards: [], points: {} };
+  assert.deepEqual(scoreRound({}, 'alice'), empty);
+  assert.deepEqual(scoreRound(null, 'alice'), empty);
+  assert.deepEqual(scoreRound(undefined, 'alice'), empty);
 });
 
 test('scoreRound with nobody correct', () => {
-  const { correct, incorrect } = scoreRound({ bob: 'cara', cara: 'bob' }, 'alice');
+  const { correct, incorrect, awards } = scoreRound({ bob: 'cara', cara: 'bob' }, 'alice');
   assert.deepEqual(correct, []);
   assert.deepEqual(incorrect.sort(), ['bob', 'cara']);
+  assert.deepEqual(awards, [], 'a wrong answer is worth nothing');
+});
+
+// ===========================================================================
+// 9b. scoreRound — PLACEMENT SCORING
+// ===========================================================================
+
+/** A vote in the current shape: a guess plus the server time it landed. */
+const at = (guess, ms) => ({ guess, at: ms });
+
+test('placement pays by submission order, ladder sized by eligible voters', () => {
+  // 6 players, alice owns the round -> 5 eligible voters, all correct.
+  const players = ['alice', 'bob', 'cara', 'dan', 'eve', 'fred'];
+  const votes = {
+    dan: at('alice', 300),
+    bob: at('alice', 100),
+    fred: at('alice', 500),
+    cara: at('alice', 200),
+    eve: at('alice', 400),
+  };
+
+  const { awards, points } = scoreRound(votes, 'alice', players);
+  assert.deepEqual(
+    awards.map((a) => [a.uid, a.place, a.points]),
+    [
+      ['bob', 1, 5],
+      ['cara', 2, 4],
+      ['dan', 3, 3],
+      ['eve', 4, 2],
+      ['fred', 5, 1],
+    ]
+  );
+  assert.equal(points.bob, 5);
+  assert.equal(points.fred, 1);
+});
+
+test('a lone correct answer is worth the maximum, not the minimum', () => {
+  // The ladder is sized by who COULD have answered, so a round only one person gets right
+  // pays that person top marks. Sizing it by the number of correct voters would pay 1.
+  const players = ['alice', 'bob', 'cara', 'dan', 'eve', 'fred'];
+  const votes = {
+    bob: at('cara', 100),
+    cara: at('dan', 150),
+    dan: at('alice', 900),
+    eve: at('bob', 200),
+    fred: at('bob', 250),
+  };
+  const { awards } = scoreRound(votes, 'alice', players);
+  assert.deepEqual(awards, [{ uid: 'dan', place: 1, points: 5 }]);
+});
+
+test('being slow costs nothing when the people ahead of you were wrong', () => {
+  const players = ['alice', 'bob', 'cara', 'dan'];
+  // bob and cara answered first but got it wrong; dan is last overall, first correct.
+  const votes = { bob: at('cara', 10), cara: at('bob', 20), dan: at('alice', 990) };
+  const { awards } = scoreRound(votes, 'alice', players);
+  assert.deepEqual(awards, [{ uid: 'dan', place: 1, points: 3 }]);
+});
+
+test('placement ties break on uid so every screen agrees', () => {
+  const players = ['alice', 'bob', 'cara'];
+  const sameMs = { cara: at('alice', 500), bob: at('alice', 500) };
+  const a = scoreRound(sameMs, 'alice', players);
+  const b = scoreRound({ bob: at('alice', 500), cara: at('alice', 500) }, 'alice', players);
+  assert.deepEqual(a.awards, b.awards, 'key order must not change the result');
+  assert.deepEqual(
+    a.awards.map((x) => x.uid),
+    ['bob', 'cara']
+  );
+});
+
+test('votes with no timestamp sort last, never first', () => {
+  // The old bare-string shape carries no time. Treating a missing stamp as 0 would hand
+  // the top of the ladder to whoever voted before the upgrade landed.
+  const players = ['alice', 'bob', 'cara'];
+  const { awards } = scoreRound({ bob: 'alice', cara: at('alice', 800) }, 'alice', players);
+  assert.deepEqual(
+    awards.map((x) => [x.uid, x.place]),
+    [
+      ['cara', 1],
+      ['bob', 2],
+    ]
+  );
+});
+
+test('scoreRound reads both vote shapes', () => {
+  const mixed = { bob: 'alice', cara: at('alice', 5), dan: at('bob', 5), eve: 'cara' };
+  const { correct, incorrect } = scoreRound(mixed, 'alice', ['alice', 'bob', 'cara', 'dan', 'eve']);
+  assert.deepEqual(correct.slice().sort(), ['bob', 'cara']);
+  assert.deepEqual(incorrect.slice().sort(), ['dan', 'eve']);
+});
+
+test('points never drop below 1, however many voted', () => {
+  // More correct voters than the eligible count can only happen if the roster shrank
+  // mid-round, but a correct answer must still be worth something.
+  const { awards } = scoreRound(
+    { bob: at('alice', 1), cara: at('alice', 2), dan: at('alice', 3) },
+    'alice',
+    ['alice', 'bob']
+  );
+  assert.deepEqual(
+    awards.map((a) => a.points),
+    [3, 2, 1]
+  );
+  assert.ok(
+    awards.every((a) => a.points >= 1),
+    'every correct answer scores at least 1'
+  );
+});
+
+test('the owner never scores their own round even with a timestamped vote', () => {
+  const { awards } = scoreRound({ alice: at('alice', 1), bob: at('alice', 2) }, 'alice', [
+    'alice',
+    'bob',
+  ]);
+  assert.deepEqual(awards, [{ uid: 'bob', place: 1, points: 1 }]);
 });
 
 // ===========================================================================
@@ -711,19 +828,26 @@ test('a realistic game: rounds generate, votes score, leaderboard ranks', () => 
     assert.equal(eligible.length, 3, 'owner sits out, everyone else votes');
     assert.ok(eligible.includes('dan'), 'a failed-scrape player still votes');
 
-    // everyone guesses correctly except the first eligible voter
+    // Everyone guesses correctly except the first eligible voter, who is also fastest —
+    // so answering first is worth nothing on its own.
     const votes = {};
     eligible.forEach((uid, i) => {
-      votes[uid] = i === 0 ? 'nobody' : round.ownerUid;
+      votes[uid] = { guess: i === 0 ? 'nobody' : round.ownerUid, at: 1000 + i * 10 };
     });
 
     const progress = voteProgress(allPlayers, round.ownerUid, votes);
     assert.equal(progress.allVoted, true);
 
-    const { correct, incorrect } = scoreRound(votes, round.ownerUid);
+    const { correct, incorrect, awards } = scoreRound(votes, round.ownerUid, allPlayers);
     assert.equal(correct.length, 2);
     assert.equal(incorrect.length, 1);
-    for (const uid of correct) scores[uid] += 1;
+    // 3 eligible voters -> the ladder tops out at 3, so the two correct answers take 3 and
+    // 2 in the order they landed. The fast wrong answer takes nothing.
+    assert.deepEqual(
+      awards.map((a) => a.points),
+      [3, 2]
+    );
+    for (const a of awards) scores[a.uid] += a.points;
   }
 
   const board = leaderboard(
@@ -734,6 +858,6 @@ test('a realistic game: rounds generate, votes score, leaderboard ranks', () => 
   for (let i = 1; i < board.length; i++) {
     assert.ok(board[i - 1].score >= board[i].score, 'board must be descending');
   }
-  // 6 rounds x 2 correct voters = 12 points handed out
-  assert.equal(board.reduce((n, r) => n + r.score, 0), 12);
+  // 6 rounds x (3 + 2) points per round = 30 handed out
+  assert.equal(board.reduce((n, r) => n + r.score, 0), 30);
 });

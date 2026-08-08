@@ -25,27 +25,35 @@ const DOCS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 // CORS — allowlist only. NEVER '*'.
 // ---------------------------------------------------------------------------
 //
-// The deployed host UI lives on GitHub Pages, so a public HTTPS origin has to be
-// able to reach this loopback server. Set GH_PAGES_ORIGIN to pin it to exactly one
-// user, e.g. GH_PAGES_ORIGIN=https://vlad94568.github.io. If unset we fall back to the
-// narrow pattern below (a single-label *.github.io origin, no path, https only) —
-// still an allowlist, but pin it in production.
-const GH_PAGES_ORIGIN = process.env.GH_PAGES_ORIGIN || null;
+// The deployed host UI lives on GitHub Pages, so ONE public HTTPS origin has to be able
+// to reach this loopback server. Exactly one — never a pattern.
+//
+// This used to fall back to /^https:\/\/[a-z0-9-]+\.github\.io$/ when GH_PAGES_ORIGIN was
+// unset, which is not an allowlist in any useful sense: github.io hands a subdomain to
+// anybody, so ANY page on ANY github.io site could POST /scrape while the helper was
+// running and read an arbitrary TikTok account's likes through the host's logged-in
+// browser profile. The launcher has always set GH_PAGES_ORIGIN, so the hole only opened
+// when the server was started by hand — which is exactly how it gets started while
+// developing, with the same cookie jar.
+//
+// The default is now the deployment this repo actually ships with, matching the hardcoded
+// PUBLIC_PLAY_URL in docs/js/host.js. Forks override it with the env var (see README) or
+// edit this constant; either way it is a single origin, so there is no permissive mode to
+// fall into by forgetting something.
+const DEFAULT_PAGES_ORIGIN = 'https://vlad94568.github.io';
+const GH_PAGES_ORIGIN = process.env.GH_PAGES_ORIGIN || DEFAULT_PAGES_ORIGIN;
 
-const ORIGIN_PATTERNS = [
+// Local dev origins. The host screen is served by this process, so in the normal setup
+// these are the only ones used at all.
+const LOCAL_ORIGIN_PATTERNS = [
   /^http:\/\/localhost(:\d+)?$/, // http://localhost:*
   /^http:\/\/127\.0\.0\.1(:\d+)?$/, // loopback by ip, same thing
-  /^https:\/\/[a-z0-9-]+\.github\.io$/i, // https://<user>.github.io
 ];
 
 function isAllowedOrigin(origin) {
   if (!origin) return false;
-  if (GH_PAGES_ORIGIN) {
-    if (origin === GH_PAGES_ORIGIN) return true;
-    // When pinned, still allow local dev origins.
-    return ORIGIN_PATTERNS.slice(0, 2).some((re) => re.test(origin));
-  }
-  return ORIGIN_PATTERNS.some((re) => re.test(origin));
+  if (origin === GH_PAGES_ORIGIN) return true;
+  return LOCAL_ORIGIN_PATTERNS.some((re) => re.test(origin));
 }
 
 const app = express();
@@ -167,7 +175,7 @@ app.use((err, req, res, _next) => {
 const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`[server] whose-tiktok listening on http://localhost:${PORT}`);
   console.log(`[server] host screen: http://localhost:${PORT}/host.html`);
-  console.log(`[server] cors: localhost:* + ${GH_PAGES_ORIGIN || 'https://<user>.github.io'}`);
+  console.log(`[server] cors: localhost:* + ${GH_PAGES_ORIGIN}`);
   // Bin any scrape results that can no longer be served. They hold player handles and
   // video ids, so there is no reason to keep them sitting on disk between games.
   sweepCache()
